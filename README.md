@@ -2,6 +2,8 @@
 
 Local collection of Pi extensions, extracted from `/etc/nix-all/home/modules/pi-extensions`.
 
+This repo is also a **Pi package**, so you can install it directly via `pi install git:<repo>`.
+
 ## Included extensions
 
 - `ask-question`
@@ -12,9 +14,37 @@ Local collection of Pi extensions, extracted from `/etc/nix-all/home/modules/pi-
 - `todo`
 - `tool-rendering`
 
-## Install (from this repo)
+## Install
 
-Pi loads extensions from:
+### Option A: Install as a Pi package (recommended)
+
+From GitHub:
+
+```bash
+pi install git:github.com/<owner>/pi-extensions
+```
+
+Or with a pinned tag/commit:
+
+```bash
+pi install git:github.com/<owner>/pi-extensions@v0.1.0
+```
+
+Project-local install (writes to `.pi/settings.json`):
+
+```bash
+pi install -l git:github.com/<owner>/pi-extensions
+```
+
+Then restart Pi, or run:
+
+```text
+/reload
+```
+
+### Option B: Local symlink install (for development)
+
+Pi loads local extensions from:
 
 - `~/.pi/agent/extensions/<extension-name>`
 
@@ -28,15 +58,19 @@ for ext in ask-question custom-footer diff plan-mode review todo tool-rendering;
 done
 ```
 
-Then restart Pi, or run:
-
-```text
-/reload
-```
+Then restart Pi, or run `/reload`.
 
 ## Update extensions
 
-After making changes in this repo:
+If installed as a Pi package:
+
+```bash
+pi update --extensions
+# or update only this package source
+pi update git:github.com/<owner>/pi-extensions
+```
+
+If using symlink-based local development:
 
 1. Commit changes:
 
@@ -45,13 +79,13 @@ git add .
 git commit -m "Update pi extensions"
 ```
 
-2. If this repo is pushed to a remote, pull latest on any machine where you use Pi:
+2. Pull latest where needed:
 
 ```bash
 git pull
 ```
 
-Because the extensions are symlinked, Pi will pick up the updated files after restart or `/reload`.
+Then restart Pi or run `/reload`.
 
 ## Add a new extension
 

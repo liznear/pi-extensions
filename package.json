@@ -1,0 +1,23 @@
+{
+  "name": "pi-extensions-nearsyh",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Pi extension bundle: ask-question, custom-footer, diff, plan-mode, review, todo, tool-rendering",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension"
+  ],
+  "pi": {
+    "extensions": [
+      "ask-question/index.ts",
+      "custom-footer/index.ts",
+      "diff/index.ts",
+      "plan-mode/index.ts",
+      "review/index.ts",
+      "todo/index.ts",
+      "tool-rendering/index.ts"
+    ]
+  }
+}
