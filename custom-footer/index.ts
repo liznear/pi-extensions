@@ -52,7 +52,7 @@ function applyCustomFooter(ctx: ExtensionContext, getLastRunDurationMs: () => nu
 					typeof agentStatus === "string" && agentStatus.trim().length > 0
 						? agentStatus.replace(/^🤖\s*/, "")
 						: "-";
-				sections.push(theme.fg("dim", `Agent: ${agentName}`));
+				sections.push(theme.fg("dim", agentName));
 
 				if (ctx.model) {
 					sections.push(theme.fg("dim", `${ctx.model.provider}/${ctx.model.id}`));
