@@ -48,8 +48,11 @@ function applyCustomFooter(ctx: ExtensionContext, getLastRunDurationMs: () => nu
 			render(width: number): string[] {
 				const sections: string[] = [];
 				const agentStatus = footerData.getExtensionStatuses().get("agent-profile");
-				const mode = typeof agentStatus === "string" && agentStatus.toLowerCase().includes("plan") ? "Plan" : "Build";
-				sections.push(theme.fg("dim", mode));
+				const agentName =
+					typeof agentStatus === "string" && agentStatus.trim().length > 0
+						? agentStatus.replace(/^🤖\s*/, "")
+						: "-";
+				sections.push(theme.fg("dim", `Agent: ${agentName}`));
 
 				if (ctx.model) {
 					sections.push(theme.fg("dim", `${ctx.model.provider}/${ctx.model.id}`));
