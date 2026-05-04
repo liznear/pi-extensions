@@ -9,7 +9,7 @@ This repo is also a **Pi package**, so you can install it directly via `pi insta
 - `ask-question`
 - `custom-footer`
 - `diff`
-- `plan-mode`
+- `custom-agents`
 - `review`
 - `todo`
 - `tool-rendering`
@@ -53,7 +53,7 @@ Create symlinks from this repo into that folder:
 ```bash
 mkdir -p ~/.pi/agent/extensions
 
-for ext in ask-question custom-footer diff plan-mode review todo tool-rendering; do
+for ext in ask-question custom-footer custom-agents diff review todo tool-rendering; do
   ln -sfn "$PWD/$ext" "$HOME/.pi/agent/extensions/$ext"
 done
 ```
@@ -108,7 +108,7 @@ rm ~/.pi/agent/extensions/<extension-name>
 
 ## Notes
 
-- `custom-footer` and `plan-mode` have their own README files with extension-specific usage.
+- `custom-footer` and `custom-agents` have their own README files with extension-specific usage.
 - If an extension does not appear, confirm the symlink exists:
 
 ```bash

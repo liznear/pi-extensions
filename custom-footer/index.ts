@@ -47,7 +47,8 @@ function applyCustomFooter(ctx: ExtensionContext, getLastRunDurationMs: () => nu
 			invalidate() {},
 			render(width: number): string[] {
 				const sections: string[] = [];
-				const mode = footerData.getExtensionStatuses().get("plan-mode") ? "Plan" : "Build";
+				const agentStatus = footerData.getExtensionStatuses().get("agent-profile");
+				const mode = typeof agentStatus === "string" && agentStatus.toLowerCase().includes("plan") ? "Plan" : "Build";
 				sections.push(theme.fg("dim", mode));
 
 				if (ctx.model) {
