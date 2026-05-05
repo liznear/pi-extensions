@@ -78,10 +78,10 @@ export default function todoExtension(pi: ExtensionAPI): void {
 		if (todos.length === 0) return "No todo items.";
 
 		const iconByStatus: Record<TodoStatus, string> = {
-			pending: "○",
-			wip: "◐",
-			completed: "●",
-			cancelled: "✕",
+			pending: "[ ]",
+			wip: "[*]",
+			completed: "[✓]",
+			cancelled: "[x]",
 		};
 
 		return todos
