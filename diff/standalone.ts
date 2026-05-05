@@ -46,3 +46,12 @@ console.log(`Pi web review test server: ${review.url}`);
 console.log(`cwd: ${cwd}`);
 console.log(`target: ${result.targetLabel} (resolved: ${result.resolvedTarget})`);
 console.log("Press Ctrl+C to stop.");
+
+async function shutdown() {
+	console.log("\nShutting down...");
+	if (result.ok) await result.server.close();
+	process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

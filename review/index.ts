@@ -29,6 +29,15 @@ const REVIEW_TOOL_NAME = "review_subagent";
 
 const pendingReviews = new Map<string, { request: string; cwd: string; createdAt: number }>();
 
+// Sweep stale entries every 2 minutes
+const REVIEW_TTL_MS = 5 * 60_000;
+setInterval(() => {
+	const now = Date.now();
+	for (const [nonce, v] of pendingReviews.entries()) {
+		if (now - v.createdAt > REVIEW_TTL_MS) pendingReviews.delete(nonce);
+	}
+}, 2 * 60_000);
+
 function buildReviewRequest(userPrompt: string, status: string, diff: string): string {
 	const scope = userPrompt.trim()
 		? `Review focus from user:\n${userPrompt.trim()}\n`
@@ -310,10 +319,6 @@ export default function reviewExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("review", {
 		description: "Run isolated review of uncommitted changes or a custom review scope",
 		handler: async (args, ctx) => {
-			for (const [nonce, v] of pendingReviews.entries()) {
-				if (Date.now() - v.createdAt > 5 * 60_000) pendingReviews.delete(nonce);
-			}
-
 			const statusRes = await pi.exec("git", ["status", "--short"], {
 				cwd: ctx.cwd,
 				timeout: 20_000,

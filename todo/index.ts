@@ -10,11 +10,7 @@ type TodoItem = {
 	status: TodoStatus;
 };
 
-type TodoSnapshotItem = {
-	order: number;
-	description: string;
-	status: TodoStatus;
-};
+type TodoSnapshotItem = TodoItem;
 
 const STATUS_VALUES = ["pending", "wip", "completed", "cancelled"] as const;
 

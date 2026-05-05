@@ -106,7 +106,7 @@ function resolveTarget(options: WebReviewServerOptions): string {
 }
 
 function applyCors(res: ServerResponse): void {
-	res.setHeader("Access-Control-Allow-Origin", "*");
+	res.setHeader("Access-Control-Allow-Origin", "http://localhost");
 	res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
@@ -126,7 +126,7 @@ function readRequestBody(req: IncomingMessage): Promise<string> {
 			body += chunk.toString();
 			if (body.length > 1024 * 1024) {
 				reject(new Error("Request body too large"));
-				req.destroy();
+				return;
 			}
 		});
 		req.on("end", () => resolve(body));

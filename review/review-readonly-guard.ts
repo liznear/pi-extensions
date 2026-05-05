@@ -9,6 +9,8 @@ function isAllowedReviewBash(command: string): boolean {
 	if (!cmd) return false;
 	if (/\n|;|&&|\|\|/.test(cmd)) return false;
 	return /^git\s+(status|diff)\b/i.test(cmd);
+	// Note: this is a best-effort guard, not a security sandbox.
+	// Single-statement git commands with unexpected flags still pass.
 }
 
 export default function reviewReadonlyGuard(pi: ExtensionAPI): void {
