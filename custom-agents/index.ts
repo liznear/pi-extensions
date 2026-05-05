@@ -206,7 +206,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
 		refreshStatus(ctx);
 	});
 
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (event) => {
 		const active = getActiveProfile();
 		if (!active) return;
 
@@ -219,11 +219,9 @@ export default function agentExtension(pi: ExtensionAPI): void {
 		}
 
 		return {
-			message: {
-				customType: "agent-extension-context",
-				display: false,
-				content: `[AGENT PROFILE ACTIVE]\nname: ${active.name}\ntype: ${active.type}\n\n${active.systemPromptTemplate}`,
-			},
+			systemPrompt:
+				event.systemPrompt +
+				`\n\n[AGENT PROFILE ACTIVE]\nname: ${active.name}\ntype: ${active.type}\n\n${active.systemPromptTemplate}`,
 		};
 	});
 
