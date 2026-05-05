@@ -85,7 +85,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
 		};
 
 		return todos
-			.map((item) => `${item.order}. ${iconByStatus[item.status]} [${item.status}] ${item.description}`)
+			.map((item) => `${item.order}. ${iconByStatus[item.status]} ${item.description}`)
 			.join("\n");
 	};
 
