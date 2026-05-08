@@ -54,6 +54,7 @@ function applyCustomFooter(
   ctx.ui.setFooter((tui, theme, footerData) => {
     const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
     const timer = setInterval(() => tui.requestRender(), 1000);
+    timer.unref();
 
     return {
       dispose() {

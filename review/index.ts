@@ -31,12 +31,13 @@ const pendingReviews = new Map<string, { request: string; cwd: string; createdAt
 
 // Sweep stale entries every 2 minutes
 const REVIEW_TTL_MS = 5 * 60_000;
-setInterval(() => {
+const sweepTimer = setInterval(() => {
 	const now = Date.now();
 	for (const [nonce, v] of pendingReviews.entries()) {
 		if (now - v.createdAt > REVIEW_TTL_MS) pendingReviews.delete(nonce);
 	}
 }, 2 * 60_000);
+sweepTimer.unref();
 
 function buildReviewRequest(userPrompt: string, status: string, diff: string): string {
 	const scope = userPrompt.trim()
