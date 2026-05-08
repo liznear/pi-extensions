@@ -16,7 +16,6 @@
       "diff/index.ts",
       "custom-agents/index.ts",
       "review/index.ts",
-      "todo/index.ts",
       "tool-rendering/index.ts"
     ]
   }
