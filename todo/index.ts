@@ -1,6 +1,7 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type, type Static } from "@sinclair/typebox";
+import { truncateToWidth } from "@mariozechner/pi-tui";
 
 type TodoStatus = "pending" | "wip" | "completed" | "cancelled";
 
@@ -70,6 +71,45 @@ export default function todoExtension(pi: ExtensionAPI): void {
 
 	const cloneTodos = () => todos.map((item) => ({ ...item }));
 
+	const createTodoWidget = () => {
+		if (todos.length === 0) return undefined;
+
+		return (_tui: unknown, theme: Theme) => ({
+			invalidate() {},
+			render(width: number): string[] {
+				const activeTodos = todos.filter((item) => item.status !== "completed" && item.status !== "cancelled").length;
+				const completedTodos = todos.filter((item) => item.status === "completed").length;
+				const summary = `${activeTodos} active · ${completedTodos}/${todos.length} done`;
+				const title = `${theme.fg("accent", theme.bold("TODOs"))}  ${theme.fg("dim", summary)}`;
+
+				const lines = [truncateToWidth(` ${title}`, width)];
+				for (const [index, item] of todos.entries()) {
+					const status = {
+						pending: { icon: "○", color: "dim" as const },
+						wip: { icon: "●", color: "warning" as const },
+						completed: { icon: "✓", color: "success" as const },
+						cancelled: { icon: "×", color: "error" as const },
+					}[item.status];
+					const branch = index === todos.length - 1 ? "┗━" : "┣━";
+					const description = item.status === "completed" || item.status === "cancelled"
+						? theme.fg("dim", item.description)
+						: theme.fg("text", item.description);
+					lines.push(truncateToWidth(
+						`  ${theme.fg("dim", branch)} ${theme.fg(status.color, status.icon)} ${description}`,
+						width,
+					));
+				}
+
+				return lines;
+			},
+		});
+	};
+
+	const updateTodoWidget = (ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
+		ctx.ui.setWidget("todo", createTodoWidget(), { placement: "aboveEditor" });
+	};
+
 	const formatTodoList = () => {
 		if (todos.length === 0) return "No todo items.";
 
@@ -107,7 +147,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	const restoreTodosFromBranch = (ctx: ExtensionContext) => {
 		todos = [];
 
 		const branch = ctx.sessionManager.getBranch();
@@ -121,7 +161,17 @@ export default function todoExtension(pi: ExtensionAPI): void {
 				break;
 			}
 		}
+	};
 
+	pi.on("session_start", async (_event, ctx) => {
+		restoreTodosFromBranch(ctx);
+		updateTodoWidget(ctx);
+		broadcastTodos("session_start");
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		restoreTodosFromBranch(ctx);
+		updateTodoWidget(ctx);
 		broadcastTodos("session_start");
 	});
 
@@ -137,7 +187,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
 			"Keep item.order unique and stable to preserve task ordering.",
 		],
 		parameters: todoWriteSchema,
-		async execute(_toolCallId, params: TodoWriteInput) {
+		async execute(_toolCallId, params: TodoWriteInput, _signal, _onUpdate, ctx) {
 			const normalized = normalizeTodos(params.items);
 			if (!normalized.ok) {
 				return {
@@ -150,6 +200,7 @@ export default function todoExtension(pi: ExtensionAPI): void {
 			todos = normalized.items;
 			const summary = formatTodoList();
 
+			updateTodoWidget(ctx);
 			broadcastTodos("tool_write");
 
 			return {
