@@ -1,12 +1,9 @@
-import type { ToolResultMessage } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { basename } from "node:path";
-
-type TodoStatus = "pending" | "wip" | "completed" | "cancelled";
 
 function formatCount(n: number): string {
   if (n < 1_000) return `${n}`;
@@ -23,28 +20,6 @@ function formatDuration(ms: number): string {
   if (hours > 0) return `${hours}h${minutes}m${seconds}s`;
   if (minutes > 0) return `${minutes}m${seconds}s`;
   return `${seconds}s`;
-}
-
-function collectTodoCounts(ctx: ExtensionContext): {
-  completed: number;
-  total: number;
-} {
-  const branch = ctx.sessionManager.getBranch();
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const msg = branch[i]?.message as ToolResultMessage;
-    if (
-      msg?.role === "toolResult" &&
-      msg.toolName === "todo_write" &&
-      Array.isArray(msg.details?.todos)
-    ) {
-      const todos = msg.details.todos as Array<{ status: TodoStatus }>;
-      return {
-        completed: todos.filter((t) => t.status === "completed").length,
-        total: todos.length,
-      };
-    }
-  }
-  return { completed: 0, total: 0 };
 }
 
 function applyCustomFooter(
@@ -97,14 +72,6 @@ function applyCustomFooter(
         const lastRunDurationMs = getLastRunDurationMs();
         if (lastRunDurationMs !== undefined) {
           sections.push(theme.fg("dim", formatDuration(lastRunDurationMs)));
-        }
-
-        const todo = collectTodoCounts(ctx);
-        if (todo.total > 0) {
-          const todoText = `TODO ${todo.completed}/${todo.total}`;
-          if (todo.completed === todo.total)
-            sections.push(theme.fg("success", todoText));
-          else sections.push(theme.fg("warning", todoText));
         }
 
         const folder = basename(ctx.cwd);
