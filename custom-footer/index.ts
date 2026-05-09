@@ -386,11 +386,12 @@ function applyCustomFooter(
           typeof agentStatus === "string" && agentStatus.trim().length > 0
             ? agentStatus.replace(/^🤖\s*/, "")
             : "-";
-        sections.push(theme.fg("dim", `${agentName}`));
+        sections.push(`\x1b[34m${agentName}${ANSI_RESET}`);
 
         if (ctx.model) {
+          const providerDisplay = ctx.modelRegistry.getProviderDisplayName(ctx.model.provider);
           sections.push(
-            theme.fg("dim", `${ctx.model.provider}/${ctx.model.id}`),
+            theme.fg("dim", `${providerDisplay}/${ctx.model.name}`),
           );
         }
 
