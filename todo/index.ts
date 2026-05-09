@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type, type Static } from "@sinclair/typebox";
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import { Text, truncateToWidth } from "@mariozechner/pi-tui";
 
 type TodoStatus = "pending" | "wip" | "completed" | "cancelled";
 
@@ -187,6 +187,24 @@ export default function todoExtension(pi: ExtensionAPI): void {
 			"Keep item.order unique and stable to preserve task ordering.",
 		],
 		parameters: todoWriteSchema,
+		renderCall(_args, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(theme.fg("toolTitle", theme.bold("todo_write")));
+			return text;
+		},
+		renderResult(result, options, theme, context) {
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			if (options.isPartial) {
+				text.setText(theme.fg("muted", "Updating todos..."));
+				return text;
+			}
+			if (!options.expanded) {
+				text.setText("");
+				return text;
+			}
+			text.setText(result.content?.[0]?.type === "text" ? result.content[0].text : "");
+			return text;
+		},
 		async execute(_toolCallId, params: TodoWriteInput, _signal, _onUpdate, ctx) {
 			const normalized = normalizeTodos(params.items);
 			if (!normalized.ok) {
