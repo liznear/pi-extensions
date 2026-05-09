@@ -7,8 +7,8 @@ import { basename } from "node:path";
 
 function formatCount(n: number): string {
   if (n < 1_000) return `${n}`;
-  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(1)}m`;
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 function formatDuration(ms: number): string {
@@ -20,6 +20,346 @@ function formatDuration(ms: number): string {
   if (hours > 0) return `${hours}h${minutes}m${seconds}s`;
   if (minutes > 0) return `${minutes}m${seconds}s`;
   return `${seconds}s`;
+}
+
+type TokenCategory =
+  | "system"
+  | "user"
+  | "assistantThinking"
+  | "assistantMessage"
+  | "tool";
+
+type TokenSegment = {
+  category: TokenCategory;
+  tokens: number;
+};
+
+type TextContentBlock = { type: "text"; text?: string };
+type ImageContentBlock = { type: "image"; data?: string };
+type AssistantContentBlock =
+  | TextContentBlock
+  | { type: "thinking"; thinking?: string }
+  | { type: "toolCall"; name?: string; arguments?: unknown };
+type TokenUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+};
+type TokenMessage = {
+  role: string;
+  content?: string | Array<TextContentBlock | ImageContentBlock>;
+  command?: string;
+  output?: string;
+  summary?: string;
+  usage?: TokenUsage;
+  stopReason?: string;
+};
+type AssistantTokenMessage = TokenMessage & {
+  content: AssistantContentBlock[];
+};
+
+const PROGRESS_BAR_WIDTH = 20;
+const TOKEN_CHARS_PER_TOKEN = 4;
+const ANSI_RESET = "\x1b[0m";
+const ANSI_BLACK = "\x1b[30m";
+const ANSI_WHITE = "\x1b[97m";
+const ANSI_LIGHT_YELLOW = "\x1b[93m";
+const TOKEN_CATEGORY_STYLES: Record<TokenCategory, string> = {
+  system: "\x1b[42m" + ANSI_WHITE,
+  user: "\x1b[102m" + ANSI_BLACK,
+  assistantThinking: "\x1b[101m" + ANSI_BLACK,
+  assistantMessage: "\x1b[48;5;214m" + ANSI_BLACK,
+  tool: "\x1b[43m" + ANSI_BLACK,
+};
+
+function estimateTokensFromChars(chars: number): number {
+  return Math.ceil(chars / TOKEN_CHARS_PER_TOKEN);
+}
+
+function estimateTextBlocksTokens(
+  content: string | Array<TextContentBlock | ImageContentBlock> | undefined,
+): number {
+  if (!content) return 0;
+  if (typeof content === "string") {
+    return estimateTokensFromChars(content.length);
+  }
+
+  let chars = 0;
+  for (const block of content) {
+    if (block.type === "text" && block.text) chars += block.text.length;
+    if (block.type === "image") chars += 4800;
+  }
+  return estimateTokensFromChars(chars);
+}
+
+function calculateContextTokens(usage: TokenUsage): number {
+  return (
+    usage.totalTokens ||
+    usage.input + usage.output + usage.cacheRead + usage.cacheWrite
+  );
+}
+
+function addTokens(
+  segments: TokenSegment[],
+  category: TokenCategory,
+  tokens: number,
+): void {
+  if (tokens <= 0) return;
+
+  const previous = segments.at(-1);
+  if (previous?.category === category) {
+    previous.tokens += tokens;
+    return;
+  }
+
+  segments.push({ category, tokens });
+}
+
+function estimateAssistantSegments(
+  message: AssistantTokenMessage,
+): TokenSegment[] {
+  const segments: TokenSegment[] = [];
+
+  for (const block of message.content) {
+    if (block.type === "text") {
+      addTokens(
+        segments,
+        "assistantMessage",
+        estimateTokensFromChars(block.text?.length ?? 0),
+      );
+    } else if (block.type === "thinking") {
+      addTokens(
+        segments,
+        "assistantThinking",
+        estimateTokensFromChars(block.thinking?.length ?? 0),
+      );
+    } else if (block.type === "toolCall") {
+      addTokens(
+        segments,
+        "tool",
+        estimateTokensFromChars(
+          (block.name?.length ?? 0) +
+            JSON.stringify(block.arguments ?? {}).length,
+        ),
+      );
+    }
+  }
+
+  return segments;
+}
+
+function scaleSegments(
+  segments: TokenSegment[],
+  targetTokens: number,
+): TokenSegment[] {
+  const currentTokens = segments.reduce(
+    (sum, segment) => sum + segment.tokens,
+    0,
+  );
+  if (currentTokens <= 0 || targetTokens <= 0) return [];
+
+  const scaled: TokenSegment[] = [];
+  let remainingTokens = targetTokens;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    const tokens =
+      i === segments.length - 1
+        ? remainingTokens
+        : Math.min(
+            remainingTokens,
+            Math.round((targetTokens * segment.tokens) / currentTokens),
+          );
+    addTokens(scaled, segment.category, tokens);
+    remainingTokens -= tokens;
+  }
+
+  return scaled;
+}
+
+function estimateMessageSegments(message: TokenMessage): TokenSegment[] {
+  switch (message.role) {
+    case "user":
+      return [
+        {
+          category: "user",
+          tokens: estimateTextBlocksTokens(message.content),
+        },
+      ];
+    case "assistant":
+      if (!Array.isArray(message.content)) return [];
+      return estimateAssistantSegments(message as AssistantTokenMessage);
+    case "toolResult":
+    case "custom":
+      return [
+        {
+          category: "tool",
+          tokens: estimateTextBlocksTokens(message.content),
+        },
+      ];
+    case "bashExecution":
+      return [
+        {
+          category: "tool",
+          tokens: estimateTokensFromChars(
+            (message.command?.length ?? 0) + (message.output?.length ?? 0),
+          ),
+        },
+      ];
+    case "branchSummary":
+    case "compactionSummary":
+      return [
+        {
+          category: "system",
+          tokens: estimateTokensFromChars(message.summary?.length ?? 0),
+        },
+      ];
+    default:
+      return [];
+  }
+}
+
+function getContextTokenSegments(ctx: ExtensionContext): TokenSegment[] {
+  const context = ctx.sessionManager.buildSessionContext();
+  const messages = context.messages as TokenMessage[];
+  const systemSegment: TokenSegment = {
+    category: "system",
+    tokens: estimateTokensFromChars(ctx.getSystemPrompt().length),
+  };
+  const segments: TokenSegment[] = [systemSegment];
+
+  let lastUsageIndex = -1;
+  let lastUsage: TokenUsage | undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (
+      message.role === "assistant" &&
+      message.usage &&
+      message.stopReason !== "aborted" &&
+      message.stopReason !== "error"
+    ) {
+      lastUsageIndex = i;
+      lastUsage = message.usage;
+      break;
+    }
+  }
+
+  if (lastUsageIndex >= 0 && lastUsage) {
+    const usageSegments: TokenSegment[] = [systemSegment];
+    for (const message of messages.slice(0, lastUsageIndex + 1)) {
+      for (const segment of estimateMessageSegments(message)) {
+        addTokens(usageSegments, segment.category, segment.tokens);
+      }
+    }
+
+    segments.splice(
+      0,
+      segments.length,
+      ...scaleSegments(usageSegments, calculateContextTokens(lastUsage)),
+    );
+
+    for (const message of messages.slice(lastUsageIndex + 1)) {
+      for (const segment of estimateMessageSegments(message)) {
+        addTokens(segments, segment.category, segment.tokens);
+      }
+    }
+
+    return segments;
+  }
+
+  for (const message of messages) {
+    for (const segment of estimateMessageSegments(message)) {
+      addTokens(segments, segment.category, segment.tokens);
+    }
+  }
+
+  return segments;
+}
+
+function ansi(color: string, text: string): string {
+  return `${color}${text}${ANSI_RESET}`;
+}
+
+function renderTokenProgressBar(
+  segments: TokenSegment[],
+  totalTokens: number,
+  usedTokens: number | null,
+): string {
+  const emptyBar = ansi(ANSI_LIGHT_YELLOW, "░".repeat(PROGRESS_BAR_WIDTH));
+  if (totalTokens <= 0) return emptyBar;
+
+  const estimatedUsedTokens = segments.reduce((sum, s) => sum + s.tokens, 0);
+  const filledWidth = Math.min(
+    PROGRESS_BAR_WIDTH,
+    Math.max(
+      0,
+      Math.round(
+        ((usedTokens ?? estimatedUsedTokens) / totalTokens) * PROGRESS_BAR_WIDTH,
+      ),
+    ),
+  );
+  if (filledWidth <= 0) return emptyBar;
+
+  const categoryOrder: TokenCategory[] = [
+    "system",
+    "user",
+    "assistantThinking",
+    "assistantMessage",
+    "tool",
+  ];
+  const categoryTokens = new Map<TokenCategory, number>();
+  for (const segment of segments) {
+    if (segment.tokens > 0) {
+      categoryTokens.set(
+        segment.category,
+        (categoryTokens.get(segment.category) ?? 0) + segment.tokens,
+      );
+    }
+  }
+
+  const weightedSegments = categoryOrder
+    .map((category, index) => ({
+      category,
+      index,
+      tokens: categoryTokens.get(category) ?? 0,
+    }))
+    .filter((segment) => segment.tokens > 0);
+  if (weightedSegments.length === 0) return emptyBar;
+
+  const visibleSegments = weightedSegments
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, filledWidth)
+    .sort((a, b) => a.index - b.index);
+  const visibleTokens = visibleSegments.reduce(
+    (sum, segment) => sum + segment.tokens,
+    0,
+  );
+  const cells = new Array<number>(visibleSegments.length).fill(1);
+  const remainingWidth = filledWidth - cells.length;
+  const remainders = visibleSegments.map((segment, index) => {
+    const exact = (segment.tokens / visibleTokens) * remainingWidth;
+    const extraCells = Math.floor(exact);
+    cells[index] += extraCells;
+    return { index, remainder: exact - extraCells };
+  });
+
+  let assigned = cells.reduce((sum, cell) => sum + cell, 0);
+  for (const { index } of remainders.sort((a, b) => b.remainder - a.remainder)) {
+    if (assigned >= filledWidth) break;
+    cells[index]++;
+    assigned++;
+  }
+
+  let bar = "";
+  for (let i = 0; i < visibleSegments.length; i++) {
+    const category = visibleSegments[i].category;
+    bar += ansi(TOKEN_CATEGORY_STYLES[category], " ".repeat(cells[i]));
+  }
+
+  return (
+    bar + ansi(ANSI_LIGHT_YELLOW, "░".repeat(PROGRESS_BAR_WIDTH - filledWidth))
+  );
 }
 
 function applyCustomFooter(
@@ -58,6 +398,11 @@ function applyCustomFooter(
         if (contextUsage && contextUsage.contextWindow > 0) {
           const { tokens, contextWindow, percent } = contextUsage;
           const usage = tokens !== null ? formatCount(tokens) : "?";
+          const progressBar = renderTokenProgressBar(
+            getContextTokenSegments(ctx),
+            contextWindow,
+            tokens,
+          );
 
           let pct = percent !== null ? `${percent.toFixed(1)}%` : "?%";
           if (percent !== null && percent > 30) {
@@ -65,7 +410,7 @@ function applyCustomFooter(
           }
 
           sections.push(
-            theme.fg("dim", `${usage}/${formatCount(contextWindow)} ${pct}`),
+            `${progressBar} ${theme.fg("dim", `${usage}/${formatCount(contextWindow)} ${pct}`)}`,
           );
         }
 
