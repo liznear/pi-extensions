@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { Text, type AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { loadAgentProfiles, type AgentProfile } from "./utils.js";
 
@@ -93,8 +93,8 @@ export default function agentExtension(pi: ExtensionAPI): void {
 		return profiles.find((p) => p.name === activeAgentName);
 	}
 
-	function setActiveAgent(name: string, notify = true, ctx?: any): boolean {
-		const profile = profiles.find((p) => p.name === name && p.type === "primary");
+	function setActiveAgent(nameOrId: string, notify = true, ctx?: any): boolean {
+		const profile = profiles.find((p) => (p.name === nameOrId || p.id === nameOrId) && p.type === "primary");
 		if (!profile) return false;
 		activeAgentName = profile.name;
 		pi.appendEntry("agent-extension", { activeAgentName } satisfies PersistedState);
@@ -120,10 +120,25 @@ export default function agentExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("agent", {
 		description: "Manage agent profiles from ~/.pi/agent/agents",
+		getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+			const items: AutocompleteItem[] = [];
+			for (const profile of profiles) {
+				if (profile.id.startsWith(prefix)) {
+					items.push({ value: profile.id, label: `${profile.id} [${profile.type}]` });
+				} else if (profile.name.startsWith(prefix)) {
+					items.push({ value: profile.name, label: `${profile.name} [${profile.type}]` });
+				}
+			}
+			const builtins = ["list", "next"];
+			for (const b of builtins) {
+				if (b.startsWith(prefix)) items.push({ value: b, label: b });
+			}
+			return items.length > 0 ? items : null;
+		},
 		handler: async (args, ctx) => {
 			const command = (args ?? "").trim();
 			if (command === "" || command === "list") {
-				const lines = profiles.map((p) => `${p.name} [${p.type}]${p.allowedTools ? ` tools=${p.allowedTools.join(",")}` : ""}`);
+				const lines = profiles.map((p) => `${p.id} / ${p.name} [${p.type}]${p.allowedTools ? ` tools=${p.allowedTools.join(",")}` : ""}`);
 				ctx.ui.notify(lines.length ? lines.join("\n") : "No agent profiles found", "info");
 				return;
 			}
@@ -156,16 +171,16 @@ export default function agentExtension(pi: ExtensionAPI): void {
 			"Only use agents whose type is subagent.",
 		],
 		parameters: Type.Object({
-			agent_name: Type.String({ description: "Subagent name from ~/.pi/agent/agents/*.md" }),
+			agent_name: Type.String({ description: "Subagent name or id from ~/.pi/agent/agents/*.md" }),
 			prompt: Type.String({ description: "Prompt for the subagent (no parent context is included)" }),
 		}),
 		renderCall: (args, theme) => {
 			return new Text(theme.fg("toolTitle", theme.bold(`run_subagent ${args.agent_name}`)), 0, 0);
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const sub = profiles.find((p) => p.name === params.agent_name && p.type === "subagent");
+			const sub = profiles.find((p) => (p.name === params.agent_name || p.id === params.agent_name) && p.type === "subagent");
 			if (!sub) {
-				const available = profiles.filter((p) => p.type === "subagent").map((p) => p.name).join(", ") || "none";
+				const available = profiles.filter((p) => p.type === "subagent").map((p) => `${p.id} / ${p.name}`).join(", ") || "none";
 				return {
 					content: [{ type: "text" as const, text: `Unknown subagent '${params.agent_name}'. Available: ${available}` }],
 					isError: true,

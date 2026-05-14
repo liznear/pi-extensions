@@ -4,6 +4,7 @@ import { join } from "node:path";
 export type AgentType = "primary" | "subagent";
 
 export type AgentProfile = {
+	id: string;
 	name: string;
 	type: AgentType;
 	allowedTools?: string[];
@@ -96,6 +97,7 @@ export async function loadAgentProfiles(agentsDir: string): Promise<{ profiles: 
 				: undefined;
 
 			profiles.push({
+				id: file.replace(/\.md$/, ""),
 				name,
 				type,
 				allowedTools: allowedTools && allowedTools.length > 0 ? allowedTools : undefined,
