@@ -18,7 +18,11 @@
       "review/index.ts",
       "todo/index.ts",
       "tool-rendering/index.ts",
-      "explain/index.ts"
+      "explain/index.ts",
+      "mini-task/index.ts"
+    ],
+    "skills": [
+      "mini-task/skills/mini-task"
     ]
   }
 }
