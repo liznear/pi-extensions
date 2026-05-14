@@ -1,0 +1,21 @@
+{
+  "name": "mini-task",
+  "version": "0.1.0",
+  "description": "Context management via structured mini-tasks for the Pi coding agent",
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "skills"
+  ],
+  "pi": {
+    "extensions": ["./index.ts"],
+    "skills": ["skills/mini-task"]
+  },
+  "keywords": [
+    "pi-agent",
+    "context-management",
+    "task-tracking",
+    "mini-task"
+  ],
+  "license": "MIT"
+}
