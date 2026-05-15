@@ -38,9 +38,11 @@ interface MiniTaskData {
 }
 
 interface PendingHandoff {
-	newLeafId: string;
 	id: string;
 	parentId: string | null;
+	startEntryId: string;
+	origin: string;
+	enrichedSummary: string;
 	nextStep: string;
 	summary: string;
 	filesChanged: string[];
@@ -625,37 +627,16 @@ export default function (pi: ExtensionAPI) {
 				? `tag: ${currentLabel}`
 				: currentLeaf || "unknown";
 
-			let newLeafId: string;
-			try {
-				newLeafId = (sm as any).branchWithSummary(
-					currentTask.startEntryId,
-					`(handoff from ${origin})\n${enrichedSummary}`,
-					undefined,
-					true
-				);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Error during context compression: ${message}. Task "${currentTask.id}" is still active.`,
-						},
-					],
-				};
-			}
-
-			// Mark task completed in session
+			// Defer branching until agent_end so the aborted message stays on the old branch
 			currentTask.status = "completed";
-
-			// Update stack
 			taskStack.pop();
 
-			// Queue navigation for after agent ends
 			pendingHandoff = {
-				newLeafId,
 				id: currentTask.id,
 				parentId: currentTask.parentId,
+				startEntryId: currentTask.startEntryId,
+				origin,
+				enrichedSummary,
 				nextStep: params.next_step,
 				summary: params.summary,
 				filesChanged: params.files_changed || [],
@@ -841,8 +822,23 @@ export default function (pi: ExtensionAPI) {
 		const handoff = pendingHandoff;
 		pendingHandoff = null;
 
+		const sm = ctx.sessionManager;
+		let newLeafId: string;
+		try {
+			newLeafId = (sm as any).branchWithSummary(
+				handoff.startEntryId,
+				`(handoff from ${handoff.origin})\n${handoff.enrichedSummary}`,
+				undefined,
+				true
+			);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			ctx.ui.notify(`Error during context compression: ${message}`, "error");
+			return;
+		}
+
 		// Navigate to the compressed branch
-		await commandCtx.navigateTree(handoff.newLeafId, {
+		await commandCtx.navigateTree(newLeafId, {
 			summarize: false,
 		});
 
