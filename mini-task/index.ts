@@ -8,7 +8,7 @@
  * Tools (LLM-facing):
  *   mini_task_start     - Start a tracked mini-task with a save point
  *   mini_task_handoff   - Complete task, compress context, inject summary
- *   mini_task_dashboard - Show task tree with status and nesting
+ *   mini_task_tree      - Show task tree with status and nesting
  *
  * Command (user-facing):
  *   /mini-task          - Enable mini-task management, show dashboard
@@ -26,19 +26,21 @@ import { join, dirname } from "node:path";
 // ---------------------------------------------------------------------------
 
 interface MiniTaskData {
-	taskId: string;
+	id: string;
 	title: string;
 	description: string;
-	parentTaskId: string | null;
+	parentId: string | null;
+	/** The tag created in the session tree to mark the start of this task */
 	startTag: string;
+	/** The session entry ID corresponding to the start of this task */
 	startEntryId: string;
 	status: "active" | "completed";
 }
 
 interface PendingHandoff {
 	newLeafId: string;
-	taskId: string;
-	parentTaskId: string | null;
+	id: string;
+	parentId: string | null;
 	nextStep: string;
 }
 
@@ -55,9 +57,11 @@ interface ExtensionCommandContextLike {
 // ---------------------------------------------------------------------------
 
 let taskStack: MiniTaskData[] = [];
+/** Map of all tasks in the current branch history, keyed by task `id` */
 let allTasksOnBranch: Map<string, MiniTaskData> = new Map();
 let commandCtx: ExtensionCommandContextLike | null = null;
 let pendingHandoff: PendingHandoff | null = null;
+let isEnabled = true;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -97,28 +101,20 @@ function reconstructState(ctx: ExtensionContext) {
 
 		if (entry.customType === "mini-task-start") {
 			const data = entry.data as MiniTaskData | undefined;
-			if (data) allTasksOnBranch.set(data.taskId, { ...data, status: "active" });
+			if (data) allTasksOnBranch.set(data.id, { ...data, status: "active" });
 		}
 
 		if (entry.customType === "mini-task-complete") {
-			const data = entry.data as { taskId: string } | undefined;
+			const data = entry.data as { id: string } | undefined;
 			if (data) {
-				const task = allTasksOnBranch.get(data.taskId);
+				const task = allTasksOnBranch.get(data.id);
 				if (task) task.status = "completed";
 			}
 		}
 	}
 
-	// Rebuild active stack in chronological order
-	const activeTasks = [...allTasksOnBranch.values()]
-		.filter((t) => t.status === "active")
-		.sort((a, b) => {
-			// Parent before child
-			if (a.parentTaskId === b.taskId) return -1;
-			if (b.parentTaskId === a.taskId) return 1;
-			return 0;
-		});
-	taskStack = activeTasks;
+	// Rebuild active stack in chronological order (Map iteration order matches insertion order)
+	taskStack = [...allTasksOnBranch.values()].filter((t) => t.status === "active");
 }
 
 /** Build a task tree string for display. */
@@ -127,7 +123,7 @@ function renderTaskTree(
 	theme: { fg: (color: string, text: string) => string },
 ): string[] {
 	const lines: string[] = [];
-	const roots = [...tasks.values()].filter((t) => !t.parentTaskId);
+	const roots = [...tasks.values()].filter((t) => !t.parentId);
 
 	function render(task: MiniTaskData, depth: number) {
 		const indent = "  ".repeat(depth);
@@ -139,12 +135,12 @@ function renderTaskTree(
 			task.status === "completed"
 				? theme.fg("dim", task.title)
 				: theme.fg("text", task.title);
-		const id = theme.fg("muted", task.taskId);
+		const id = theme.fg("muted", task.id);
 
 		lines.push(`${indent}${icon} ${id} ${title}`);
 
 		const children = [...tasks.values()].filter(
-			(t) => t.parentTaskId === task.taskId,
+			(t) => t.parentId === task.id,
 		);
 		for (const child of children) render(child, depth + 1);
 	}
@@ -164,7 +160,7 @@ function updateWidget(ctx: ExtensionContext) {
 	const lines = [
 		ctx.ui.theme.fg(
 			"accent",
-			`\u25cf Task [${depth}]: ${current.taskId}`,
+			`\u25cf Task [${depth}]: ${current.id}`,
 		) +
 			" " +
 			ctx.ui.theme.fg("muted", current.title),
@@ -172,7 +168,7 @@ function updateWidget(ctx: ExtensionContext) {
 	if (depth > 1) {
 		const parents = taskStack
 			.slice(0, -1)
-			.map((t) => t.taskId)
+			.map((t) => t.id)
 			.join(" \u2192 ");
 		lines.push(
 			ctx.ui.theme.fg("dim", `  Stack: ${parents}`),
@@ -253,7 +249,7 @@ class TaskDashboardComponent {
 				const arrow = depth === 0 ? th.fg("accent", "\u2192") : th.fg("dim", "\u21b3");
 				lines.push(
 					truncateToWidth(
-						`  ${indent}${arrow} ${th.fg("muted", t.taskId)}: ${th.fg("text", t.title)}`,
+						`  ${indent}${arrow} ${th.fg("muted", t.id)}: ${th.fg("text", t.title)}`,
 						width,
 					),
 				);
@@ -301,12 +297,6 @@ const StartParams = Type.Object({
 				"What this task aims to accomplish. Be specific about the expected outcome.",
 		}),
 	),
-	parent_task_id: Type.Optional(
-		Type.String({
-			description:
-				"ID of the parent task for nesting. Omit to nest under the current active task, or set to empty string for top-level.",
-		}),
-	),
 });
 
 const HandoffParams = Type.Object({
@@ -336,7 +326,7 @@ const HandoffParams = Type.Object({
 	}),
 });
 
-const DashboardParams = Type.Object({});
+const TreeParams = Type.Object({});
 
 // ---------------------------------------------------------------------------
 // Extension
@@ -368,17 +358,32 @@ export default function (pi: ExtensionAPI) {
 	// -----------------------------------------------------------------------
 
 	pi.registerCommand("mini-task", {
-		description: "Enable mini-task management and show task dashboard",
-		handler: async (_args, ctx) => {
+		description: "Toggle mini-task management (on/off)",
+		handler: async (args, ctx) => {
 			// Capture command context for tree navigation
 			commandCtx = ctx as unknown as ExtensionCommandContextLike;
 
+			const arg = args.trim().toLowerCase();
+			if (arg === "off") {
+				isEnabled = false;
+				ctx.ui.notify("Mini-task management disabled", "info");
+				return;
+			} else if (arg === "on") {
+				isEnabled = true;
+				ctx.ui.notify("Mini-task management enabled", "info");
+				return;
+			} else if (arg === "continue") {
+				// Just capture commandCtx
+				isEnabled = true;
+				ctx.ui.notify("Navigation permissions granted. The LLM will now retry.", "success");
+				return;
+			}
+
+			isEnabled = true; // implicitly enable if they just run /mini-task
 			if (!ctx.hasUI) {
 				ctx.ui.notify("mini-task requires interactive mode", "error");
 				return;
 			}
-
-			ctx.ui.notify("Mini-task management enabled", "info");
 
 			// Show interactive dashboard
 			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
@@ -401,11 +406,11 @@ export default function (pi: ExtensionAPI) {
 		label: "Mini Task Start",
 		description:
 			"Start a new tracked mini-task. Creates a save point in the conversation tree. " +
-			"Use before any focused work: implementation, research, debugging, or experiments. " +
+			"Use before any focused work to explicitly state your plan and what you are going to do. " +
 			"When the task completes, call mini_task_handoff to compress the work into a summary and free context.",
-		promptSnippet: "Start a tracked mini-task with a context save point",
+		promptSnippet: "Explicitly state your plan and start a tracked mini-task",
 		promptGuidelines: [
-			"Use mini_task_start before any focused piece of work: implementation tasks, research, debugging, or experiments.",
+			"Use mini_task_start before any focused piece of work. It acts as a reminder for you to explicitly state what your plan is and what you are going to do.",
 			"Break large tasks into mini-tasks proactively. Each mini-task should have a clear, achievable goal.",
 			"Experiments and exploration are also mini-tasks. After the experiment, use mini_task_handoff to summarize findings and free context.",
 			"Mini-tasks can be nested for finer-grained control. A sub-task's handoff returns to the parent task.",
@@ -414,33 +419,24 @@ export default function (pi: ExtensionAPI) {
 		parameters: StartParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (!isEnabled) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Error: Mini-task management is disabled. Ask the user to run `/mini-task on` to enable it.",
+						},
+					],
+				};
+			}
+
 			const sm = ctx.sessionManager;
 
 			// Generate unique task ID
-			const taskId = uniqueSlug(params.title, allTasksOnBranch);
+			const id = uniqueSlug(params.title, allTasksOnBranch);
 
-			// Determine parent task
-			let parentTaskId: string | null = null;
-			if (params.parent_task_id === "") {
-				// Explicit top-level
-				parentTaskId = null;
-			} else if (params.parent_task_id) {
-				// Explicit parent
-				if (!allTasksOnBranch.has(params.parent_task_id)) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Error: Parent task "${params.parent_task_id}" not found. Active tasks: ${[...allTasksOnBranch.keys()].join(", ") || "none"}`,
-							},
-						],
-					};
-				}
-				parentTaskId = params.parent_task_id;
-			} else if (taskStack.length > 0) {
-				// Default: nest under current task
-				parentTaskId = taskStack[taskStack.length - 1].taskId;
-			}
+			// Determine parent task implicitly from the active stack
+			const parentId = taskStack.length > 0 ? taskStack[taskStack.length - 1].id : null;
 
 			// Create tag at current leaf position
 			const startEntryId = sm.getLeafId();
@@ -455,15 +451,15 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			const startTag = `${taskId}-start`;
+			const startTag = `${id}-start`;
 			pi.setLabel(startEntryId, startTag);
 
 			// Build task data
 			const task: MiniTaskData = {
-				taskId,
+				id,
 				title: params.title,
 				description: params.description || "",
-				parentTaskId,
+				parentId,
 				startTag,
 				startEntryId,
 				status: "active",
@@ -473,12 +469,12 @@ export default function (pi: ExtensionAPI) {
 			pi.appendEntry("mini-task-start", task);
 
 			// Update in-memory state
-			allTasksOnBranch.set(taskId, task);
+			allTasksOnBranch.set(id, task);
 			taskStack.push(task);
 
 			const depth = taskStack.length;
-			const parentInfo = parentTaskId
-				? `\n  Nested under: ${parentTaskId}`
+			const parentInfo = parentId
+				? `\n  Nested under: ${parentId}`
 				: "\n  Top-level task";
 			const depthInfo = `\n  Stack depth: ${depth}`;
 
@@ -486,10 +482,10 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Started mini-task: ${taskId}${parentInfo}${depthInfo}\n  Tag: ${startTag}\n\nWork on this task now. When done, call mini_task_handoff with a summary to compress context.`,
+						text: `Started mini-task: ${id}${parentInfo}${depthInfo}\n  Tag: ${startTag}\n\nWork on this task now. When done, call mini_task_handoff with a summary to compress context.`,
 					},
 				],
-				details: { taskId, startTag, depth, parentTaskId },
+				details: { id, startTag, depth, parentId },
 			};
 		},
 
@@ -531,16 +527,27 @@ export default function (pi: ExtensionAPI) {
 		parameters: HandoffParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (!isEnabled) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Error: Mini-task management is disabled. Ask the user to run `/mini-task on` to enable it.",
+						},
+					],
+				};
+			}
+
 			// Check if enabled
 			if (!commandCtx) {
 				ctx.ui.setEditorText(
-					`/mini-task ${ctx.ui.getEditorText() || "continue"}`,
+					`/mini-task continue`,
 				);
 				return {
 					content: [
 						{
 							type: "text",
-							text: "Mini-task management is not enabled. Ask the user to run `/mini-task` to enable it, then retry.",
+							text: "This is the first handoff of the session. A command has been placed in your editor. Please ask the user to press Enter to grant navigation permissions, then retry.",
 						},
 					],
 				};
@@ -565,7 +572,7 @@ export default function (pi: ExtensionAPI) {
 			if (currentLeaf === currentTask.startEntryId) {
 				currentTask.status = "completed";
 				pi.appendEntry("mini-task-complete", {
-					taskId: currentTask.taskId,
+					id: currentTask.id,
 					summary: params.summary,
 					filesChanged: params.files_changed || [],
 					decisions: params.decisions || [],
@@ -576,7 +583,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Mini-task "${currentTask.taskId}" completed (no context to compress).\n\nNext: ${params.next_step}`,
+							text: `Mini-task "${currentTask.id}" completed (no context to compress).\n\nNext: ${params.next_step}`,
 						},
 					],
 				};
@@ -584,7 +591,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Build enriched summary
 			const parts: string[] = [];
-			parts.push(`[Mini-task: ${currentTask.taskId} \u2014 ${currentTask.title}]`);
+			parts.push(`[Mini-task: ${currentTask.id} \u2014 ${currentTask.title}]`);
 			parts.push(`Status: Completed`);
 			parts.push(`Summary: ${params.summary}`);
 
@@ -624,7 +631,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Error during context compression: ${message}. Task "${currentTask.taskId}" is still active.`,
+							text: `Error during context compression: ${message}. Task "${currentTask.id}" is still active.`,
 						},
 					],
 				};
@@ -633,7 +640,7 @@ export default function (pi: ExtensionAPI) {
 			// Mark task completed in session
 			currentTask.status = "completed";
 			pi.appendEntry("mini-task-complete", {
-				taskId: currentTask.taskId,
+				id: currentTask.id,
 				summary: params.summary,
 				filesChanged: params.files_changed || [],
 				decisions: params.decisions || [],
@@ -645,8 +652,8 @@ export default function (pi: ExtensionAPI) {
 			// Queue navigation for after agent ends
 			pendingHandoff = {
 				newLeafId,
-				taskId: currentTask.taskId,
-				parentTaskId: currentTask.parentTaskId,
+				id: currentTask.id,
+				parentId: currentTask.parentId,
 				nextStep: params.next_step,
 			};
 
@@ -654,7 +661,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Handoff initiated for "${currentTask.taskId}". The current turn will end and context will be compressed.`,
+						text: `Handoff initiated for "${currentTask.id}". The current turn will end and context will be compressed.`,
 					},
 				],
 			};
@@ -682,18 +689,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// -----------------------------------------------------------------------
-	// mini_task_dashboard tool
+	// mini_task_tree tool
 	// -----------------------------------------------------------------------
 
 	pi.registerTool({
-		name: "mini_task_dashboard",
-		label: "Mini Task Dashboard",
+		name: "mini_task_tree",
+		label: "Mini Task Tree",
 		description:
 			"Show the tree of all mini-tasks in this session: their status, nesting, " +
 			"and the current active stack. Use this to orient yourself on where you are " +
 			"in the task hierarchy.",
 		promptSnippet: "Show mini-task tree and status",
-		parameters: DashboardParams,
+		parameters: TreeParams,
 
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const sm = ctx.sessionManager;
@@ -707,13 +714,13 @@ export default function (pi: ExtensionAPI) {
 
 				if (entry.customType === "mini-task-start") {
 					const data = entry.data as MiniTaskData | undefined;
-					if (data) allTasks.set(data.taskId, { ...data, status: "active" });
+					if (data) allTasks.set(data.id, { ...data, status: "active" });
 				}
 
 				if (entry.customType === "mini-task-complete") {
-					const data = entry.data as { taskId: string } | undefined;
+					const data = entry.data as { id: string } | undefined;
 					if (data) {
-						const task = allTasks.get(data.taskId);
+						const task = allTasks.get(data.id);
 						if (task) task.status = "completed";
 					}
 				}
@@ -748,7 +755,7 @@ export default function (pi: ExtensionAPI) {
 				lines.push("");
 
 				const roots = [...allTasks.values()].filter(
-					(t) => !t.parentTaskId,
+					(t) => !t.parentId,
 				);
 
 				function renderTask(task: MiniTaskData, depth: number) {
@@ -756,7 +763,7 @@ export default function (pi: ExtensionAPI) {
 					const icon =
 						task.status === "completed" ? "\u2713" : "\u25cf";
 					lines.push(
-						`${indent}${icon} ${task.taskId}: ${task.title}`,
+						`${indent}${icon} ${task.id}: ${task.title}`,
 					);
 					if (task.description) {
 						lines.push(
@@ -764,7 +771,7 @@ export default function (pi: ExtensionAPI) {
 						);
 					}
 					const children = [...allTasks.values()].filter(
-						(t) => t.parentTaskId === task.taskId,
+						(t) => t.parentId === task.id,
 					);
 					for (const child of children) renderTask(child, depth + 1);
 				}
@@ -779,7 +786,7 @@ export default function (pi: ExtensionAPI) {
 				for (let i = taskStack.length - 1; i >= 0; i--) {
 					const t = taskStack[i];
 					const prefix = i === taskStack.length - 1 ? "\u2192 " : "  ";
-					lines.push(`  ${prefix}${t.taskId}: ${t.title}`);
+					lines.push(`  ${prefix}${t.id}: ${t.title}`);
 				}
 			} else {
 				lines.push("No active tasks.");
@@ -793,7 +800,7 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(_args, theme) {
 			return new Text(
-				theme.fg("toolTitle", theme.bold("mini_task_dashboard")),
+				theme.fg("toolTitle", theme.bold("mini_task_tree")),
 				0,
 				0,
 			);
@@ -835,19 +842,19 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		ctx.ui.notify(
-			`Compressed mini-task "${handoff.taskId}". Context freed.`,
+			`Compressed mini-task "${handoff.id}". Context freed.`,
 			"info",
 		);
 
 		// Inject continuation message for the LLM
-		const parentInfo = handoff.parentTaskId
-			? ` (resuming parent: ${handoff.parentTaskId})`
+		const parentInfo = handoff.parentId
+			? ` (resuming parent: ${handoff.parentId})`
 			: "";
 
 		pi.sendMessage(
 			{
 				customType: "mini-task",
-				content: `mini_task_handoff complete for "${handoff.taskId}"${parentInfo}. Context has been compressed into a summary above. Read the summary to understand your current state, then: ${handoff.nextStep}`,
+				content: `mini_task_handoff complete for "${handoff.id}"${parentInfo}. Context has been compressed into a summary above. Read the summary to understand your current state, then: ${handoff.nextStep}`,
 				display: false,
 			},
 			{

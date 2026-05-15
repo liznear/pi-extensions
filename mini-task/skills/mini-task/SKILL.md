@@ -1,6 +1,6 @@
 ---
 name: mini-task
-description: Context management via structured mini-tasks. Use mini_task_start to begin tracked work, mini_task_handoff to compress context when done, mini_task_dashboard to orient. Break large tasks into mini-tasks. Experiments are mini-tasks too.
+description: Context management via structured mini-tasks. Use mini_task_start to explicitly state your plan and begin tracked work, mini_task_handoff to compress context when done, mini_task_tree to orient. Break large tasks into mini-tasks. Experiments are mini-tasks too.
 ---
 
 # Mini-Task: Structured Context Management
@@ -11,21 +11,15 @@ Your context window is limited. Mini-tasks give you **explicit control** over wh
 
 ## Prerequisites
 
-Mini-task management must be enabled. Ask the user to run:
-
-```
-/mini-task
-```
-
-This must be done once per session. If you call `mini_task_handoff` and get an error about not being enabled, remind the user.
+Mini-task management is enabled by default. The user can toggle it off and on using the `/mini-task` and `/mini-task off` commands.
 
 ## The Three Tools
 
 | Tool | Purpose | When |
 |------|---------|------|
-| `mini_task_start` | Start a tracked task with a save point | Before beginning any focused work |
+| `mini_task_start` | Start a tracked task with a save point. Reminds you to explicitly state your plan. | Before beginning any focused work |
 | `mini_task_handoff` | Complete task, compress context into summary | When the task's goal is met (or abandoned) |
-| `mini_task_dashboard` | Show task tree and active stack | When you need to orient yourself |
+| `mini_task_tree` | Show task tree and active stack | When you need to orient yourself |
 
 ## Workflow
 
@@ -115,7 +109,7 @@ mini_task_handoff({
 | Starting focused work | `mini_task_start` |
 | Task goal achieved | `mini_task_handoff` with summary |
 | Experiment/research | Wrap in mini-task, handoff with findings |
-| Feeling lost in the conversation | `mini_task_dashboard` to orient |
+| Feeling lost in the conversation | `mini_task_tree` to orient |
 | Large task with clear sub-goals | Nest mini-tasks |
 | Context getting long (>50%) | Check for un-handoff'd tasks |
 | Abandoned approach | `mini_task_handoff` with failure summary |
