@@ -42,6 +42,9 @@ interface PendingHandoff {
 	id: string;
 	parentId: string | null;
 	nextStep: string;
+	summary: string;
+	filesChanged: string[];
+	decisions: string[];
 }
 
 // Minimal interface for the command context we need
@@ -101,7 +104,7 @@ function reconstructState(ctx: ExtensionContext) {
 
 		if (entry.customType === "mini-task-start") {
 			const data = entry.data as MiniTaskData | undefined;
-			if (data) allTasksOnBranch.set(data.id, { ...data, status: "active" });
+			if (data) allTasksOnBranch.set(data.id, { ...data, status: "active", startEntryId: entry.id });
 		}
 
 		if (entry.customType === "mini-task-complete") {
@@ -345,6 +348,8 @@ export default function (pi: ExtensionAPI) {
 
 	// Reconstruct state on session events
 	pi.on("session_start", async (_event, ctx) => {
+		commandCtx = null;
+		pendingHandoff = null;
 		reconstructState(ctx);
 		updateWidget(ctx);
 	});
@@ -437,6 +442,21 @@ export default function (pi: ExtensionAPI) {
 
 			// Determine parent task implicitly from the active stack
 			const parentId = taskStack.length > 0 ? taskStack[taskStack.length - 1].id : null;
+			const startTag = `${id}-start`;
+
+			// Build task data
+			const task: MiniTaskData = {
+				id,
+				title: params.title,
+				description: params.description || "",
+				parentId,
+				startTag,
+				startEntryId: "", // Populated below
+				status: "active",
+			};
+
+			// Persist in session
+			pi.appendEntry("mini-task-start", task);
 
 			// Create tag at current leaf position
 			const startEntryId = sm.getLeafId();
@@ -451,22 +471,8 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			const startTag = `${id}-start`;
 			pi.setLabel(startEntryId, startTag);
-
-			// Build task data
-			const task: MiniTaskData = {
-				id,
-				title: params.title,
-				description: params.description || "",
-				parentId,
-				startTag,
-				startEntryId,
-				status: "active",
-			};
-
-			// Persist in session
-			pi.appendEntry("mini-task-start", task);
+			task.startEntryId = startEntryId;
 
 			// Update in-memory state
 			allTasksOnBranch.set(id, task);
@@ -621,9 +627,11 @@ export default function (pi: ExtensionAPI) {
 
 			let newLeafId: string;
 			try {
-				newLeafId = await sm.branchWithSummary(
+				newLeafId = (sm as any).branchWithSummary(
 					currentTask.startEntryId,
 					`(handoff from ${origin})\n${enrichedSummary}`,
+					undefined,
+					true
 				);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
@@ -639,12 +647,6 @@ export default function (pi: ExtensionAPI) {
 
 			// Mark task completed in session
 			currentTask.status = "completed";
-			pi.appendEntry("mini-task-complete", {
-				id: currentTask.id,
-				summary: params.summary,
-				filesChanged: params.files_changed || [],
-				decisions: params.decisions || [],
-			});
 
 			// Update stack
 			taskStack.pop();
@@ -655,6 +657,9 @@ export default function (pi: ExtensionAPI) {
 				id: currentTask.id,
 				parentId: currentTask.parentId,
 				nextStep: params.next_step,
+				summary: params.summary,
+				filesChanged: params.files_changed || [],
+				decisions: params.decisions || [],
 			};
 
 			return {
@@ -705,8 +710,8 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const sm = ctx.sessionManager;
 
-			// Scan ALL entries (across branches) for complete task history
-			const allEntries = sm.getEntries();
+			// Scan active branch for complete task history
+			const allEntries = sm.getBranch();
 			const allTasks: Map<string, MiniTaskData> = new Map();
 
 			for (const entry of allEntries) {
@@ -840,6 +845,17 @@ export default function (pi: ExtensionAPI) {
 		await commandCtx.navigateTree(handoff.newLeafId, {
 			summarize: false,
 		});
+
+		pi.appendEntry("mini-task-complete", {
+			id: handoff.id,
+			summary: handoff.summary,
+			filesChanged: handoff.filesChanged,
+			decisions: handoff.decisions,
+		});
+
+		// Force state reconstruction to include the newly appended completion entry
+		reconstructState(ctx);
+		updateWidget(ctx);
 
 		ctx.ui.notify(
 			`Compressed mini-task "${handoff.id}". Context freed.`,
