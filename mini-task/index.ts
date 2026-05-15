@@ -33,14 +33,16 @@ interface MiniTaskData {
 	/** The tag created in the session tree to mark the start of this task */
 	startTag: string;
 	/** The session entry ID corresponding to the start of this task */
-	startEntryId: string;
+	startEntryId: string | null;
 	status: "active" | "completed";
 }
 
 interface PendingHandoff {
 	id: string;
+	title: string;
+	description: string;
 	parentId: string | null;
-	startEntryId: string;
+	startEntryId: string | null;
 	origin: string;
 	enrichedSummary: string;
 	nextStep: string;
@@ -110,10 +112,23 @@ function reconstructState(ctx: ExtensionContext) {
 		}
 
 		if (entry.customType === "mini-task-complete") {
-			const data = entry.data as { id: string } | undefined;
+			const data = entry.data as any;
 			if (data) {
 				const task = allTasksOnBranch.get(data.id);
-				if (task) task.status = "completed";
+				if (task) {
+					task.status = "completed";
+				} else {
+					// Reconstruct if the start entry was branched away
+					allTasksOnBranch.set(data.id, {
+						id: data.id,
+						title: data.title || data.id,
+						description: data.description || "",
+						parentId: data.parentId || null,
+						startTag: `${data.id}-start`,
+						startEntryId: null,
+						status: "completed"
+					});
+				}
 			}
 		}
 	}
@@ -446,6 +461,12 @@ export default function (pi: ExtensionAPI) {
 			const parentId = taskStack.length > 0 ? taskStack[taskStack.length - 1].id : null;
 			const startTag = `${id}-start`;
 
+			// We need to branch from the state BEFORE the agent decided to start this task.
+			// The current leaf is the assistant message containing the tool call.
+			const assistantEntryId = sm.getLeafId();
+			const assistantEntry = assistantEntryId ? sm.getEntry(assistantEntryId) : undefined;
+			const promptEntryId = assistantEntry ? assistantEntry.parentId : null;
+
 			// Build task data
 			const task: MiniTaskData = {
 				id,
@@ -453,28 +474,16 @@ export default function (pi: ExtensionAPI) {
 				description: params.description || "",
 				parentId,
 				startTag,
-				startEntryId: "", // Populated below
+				startEntryId: promptEntryId, // Populated below
 				status: "active",
 			};
 
 			// Persist in session
 			pi.appendEntry("mini-task-start", task);
 
-			// Create tag at current leaf position
-			const startEntryId = sm.getLeafId();
-			if (!startEntryId) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Error: No current position in session.",
-						},
-					],
-				};
+			if (promptEntryId) {
+				pi.setLabel(promptEntryId, startTag);
 			}
-
-			pi.setLabel(startEntryId, startTag);
-			task.startEntryId = startEntryId;
 
 			// Update in-memory state
 			allTasksOnBranch.set(id, task);
@@ -633,6 +642,8 @@ export default function (pi: ExtensionAPI) {
 
 			pendingHandoff = {
 				id: currentTask.id,
+				title: currentTask.title,
+				description: currentTask.description,
 				parentId: currentTask.parentId,
 				startEntryId: currentTask.startEntryId,
 				origin,
@@ -844,6 +855,9 @@ export default function (pi: ExtensionAPI) {
 
 		pi.appendEntry("mini-task-complete", {
 			id: handoff.id,
+			title: handoff.title,
+			description: handoff.description,
+			parentId: handoff.parentId,
 			summary: handoff.summary,
 			filesChanged: handoff.filesChanged,
 			decisions: handoff.decisions,
