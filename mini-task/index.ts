@@ -17,6 +17,7 @@
  */
 
 import type {
+  AgentToolResult,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
@@ -402,13 +403,14 @@ export default function (pi: ExtensionAPI) {
   // /mini-task command
   // -----------------------------------------------------------------------
 
-  const disabledMessage = {
+  const disabledMessage: AgentToolResult<unknown> = {
     content: [
       {
         type: "text",
         text: "Error: Mini-task management is disabled. Ask the user to run `/mini-task on` to enable it.",
       },
     ],
+    details: {},
   };
 
   pi.registerCommand("mini-task", {
@@ -442,6 +444,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // This is not used yet. Use it after expandPromptTemplates is available.
   pi.registerCommand("mini-task-handoff", {
     description: "Internal command to handoff from a completed mini task",
     handler: async (args, ctx) => {
@@ -628,6 +631,7 @@ export default function (pi: ExtensionAPI) {
               text: "No active mini-task to hand off. Start a task with mini_task_start first.",
             },
           ],
+          details: {},
         };
       }
       currentTask.status = "completed";
@@ -650,6 +654,7 @@ export default function (pi: ExtensionAPI) {
               text: `Mini-task "${currentTask.id}" completed (no context to compress).\n\nNext: ${params.next_step}`,
             },
           ],
+          details: {},
         };
       }
 
@@ -707,6 +712,7 @@ export default function (pi: ExtensionAPI) {
             text: `Handoff initiated for "${currentTask.id}". The current turn will end and context will be compressed.`,
           },
         ],
+        details: {},
         terminate: true,
       };
     },
@@ -893,11 +899,6 @@ export default function (pi: ExtensionAPI) {
     // Force state reconstruction to include the newly appended completion entry
     state = new State(ctx);
     updateWidget(ctx, state);
-
-    ctx.ui.notify(
-      `Compressed mini-task "${handoff.task.id}". Context freed.`,
-      "info",
-    );
 
     // Inject continuation message for the LLM
     const parentInfo = handoff.task.parentId
