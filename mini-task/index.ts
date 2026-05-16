@@ -52,14 +52,6 @@ interface PendingHandoff {
   decisions: string[];
 }
 
-// Minimal interface for the command context we need
-interface ExtensionCommandContextLike {
-  navigateTree(
-    targetId: string,
-    options: { summarize: boolean },
-  ): Promise<unknown>;
-}
-
 // ---------------------------------------------------------------------------
 // Module-level state
 // ---------------------------------------------------------------------------
@@ -170,10 +162,11 @@ class State {
   handoffTask(): MiniTaskData | undefined {
     return this.taskStack.pop();
   }
-  updateTasks(ctx: ExtensionContext) {}
 }
 
-let isEnabled = true;
+// Enable by default once expandPromptTemplates is supported in sendUserMessage.
+let isEnabled = false;
+let commandCtx: ExtensionCommandContext | undefined;
 let state: State | undefined;
 
 // ---------------------------------------------------------------------------
@@ -249,14 +242,9 @@ class TaskDashboardComponent {
   private cachedWidth?: number;
   private cachedLines?: string[];
 
-  constructor(
-    tasks: Map<string, MiniTaskData>,
-    stack: MiniTaskData[],
-    theme: any,
-    onClose: () => void,
-  ) {
-    this.tasks = tasks;
-    this.stack = stack;
+  constructor(state: State, theme: any, onClose: () => void) {
+    this.tasks = state.allTasks;
+    this.stack = state.taskStack;
     this.theme = theme;
     this.onClose = onClose;
   }
@@ -400,6 +388,8 @@ export default function (pi: ExtensionAPI) {
 
   // Reconstruct state on session events
   pi.on("session_start", async (_event, ctx: ExtensionContext) => {
+    commandCtx = undefined;
+    isEnabled = false;
     state = new State(ctx);
     updateWidget(ctx, state);
   });
@@ -437,9 +427,8 @@ export default function (pi: ExtensionAPI) {
       } else if (arg === "on") {
         isEnabled = true;
         ctx.ui.notify("Mini-task management enabled", "info");
+        commandCtx = ctx;
         return;
-      } else {
-        ctx.ui.notify("Unkonwn argument", "warning");
       }
 
       if (!isEnabled) {
@@ -448,12 +437,7 @@ export default function (pi: ExtensionAPI) {
 
       // Show interactive dashboard
       await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-        return new TaskDashboardComponent(
-          state!.allTasks,
-          state!.taskStack,
-          theme,
-          () => done(),
-        );
+        return new TaskDashboardComponent(state!, theme, () => done());
       });
     },
   });
@@ -710,17 +694,12 @@ export default function (pi: ExtensionAPI) {
         decisions: params.decisions || [],
       };
 
-      pi.sendMessage(
-        {
-          customType: "mini-task",
-          content: `/mini-task-handoff`,
-          display: false,
-        },
-        {
-          triggerTurn: true,
-          deliverAs: "steer",
-        },
-      );
+      // Currently, this is not supported.
+      // pi.sendUserMessage("/mini-task-handoff", {
+      //   deliverAs: "steer",
+      //   // This is only available in my own fork.
+      //   expandPromptTemplates: true,
+      // });
       return {
         content: [
           {
@@ -728,6 +707,7 @@ export default function (pi: ExtensionAPI) {
             text: `Handoff initiated for "${currentTask.id}". The current turn will end and context will be compressed.`,
           },
         ],
+        terminate: true,
       };
     },
 
@@ -767,7 +747,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Show mini-task tree and status",
     parameters: TreeParams,
 
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctxs) {
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       if (!isEnabled) {
         return disabledMessage;
       }
@@ -785,9 +765,9 @@ export default function (pi: ExtensionAPI) {
       lines.push("");
 
       // Context usage
-      const usage = await ctx.getContextUsage();
+      const usage = ctx.getContextUsage();
       if (usage) {
-        const pct = usage.percent.toFixed(1);
+        const pct = usage.percent!.toFixed(1);
         lines.push(`Context: ${pct}% used`);
       }
 
@@ -846,36 +826,11 @@ export default function (pi: ExtensionAPI) {
         0,
       );
     },
-
-    renderResult(result, _options, theme) {
-      const text = result.content[0];
-      const msg = text?.type === "text" ? text.text : "";
-      const lines = msg.split("\n");
-      // Show header + first few lines
-      const preview = lines.slice(0, 6).join("\n");
-      return new Text(theme.fg("muted", preview), 0, 0);
-    },
   });
 
   // -----------------------------------------------------------------------
   // Widget: show active task above editor
   // -----------------------------------------------------------------------
-
-  pi.on("message_end", async (event, ctx) => {
-    if (!isEnabled) {
-      return;
-    }
-    if (
-      event.message.role === "toolResult" &&
-      event.message.toolName === "mini_task_start"
-    ) {
-      const task = state!.currentTask();
-      if (task && task.status === "active") {
-        // The toolResult message is now the leaf. This is our true start point.
-        task.startEntryId = ctx.sessionManager.getLeafId();
-      }
-    }
-  });
 
   pi.on("tool_execution_end", async (event, ctx) => {
     if (!isEnabled) {
@@ -886,6 +841,78 @@ export default function (pi: ExtensionAPI) {
       event.toolName === "mini_task_handoff"
     ) {
       updateWidget(ctx, state!);
+      if (event.toolName === "mini_task_start") {
+        const task = state!.currentTask();
+        if (task && task.status === "active") {
+          // The toolResult message is now the leaf. This is our true start point.
+          task.startEntryId = ctx.sessionManager.getLeafId();
+        }
+      }
     }
+  });
+
+  pi.on("agent_end", async (event, ctx) => {
+    if (!isEnabled) {
+      return;
+    }
+    if (!state!.pendingHandoff) return;
+
+    const handoff = state!.pendingHandoff!;
+    state!.pendingHandoff = null;
+
+    const sm = ctx.sessionManager;
+    let newLeafId: string;
+    try {
+      newLeafId = (sm as any).branchWithSummary(
+        handoff.task.startEntryId,
+        `(handoff from ${handoff.origin})\n${handoff.enrichedSummary}`,
+        undefined,
+        true,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`Error during context compression: ${message}`, "error");
+      return;
+    }
+
+    // Navigate to the compressed branch
+    await commandCtx!.navigateTree(newLeafId, {
+      summarize: false,
+    });
+
+    pi.appendEntry("mini-task-complete", {
+      id: handoff.task.id,
+      title: handoff.task.title,
+      description: handoff.task.description,
+      parentId: handoff.task.parentId,
+      summary: handoff.summary,
+      filesChanged: handoff.filesChanged,
+      decisions: handoff.decisions,
+    });
+
+    // Force state reconstruction to include the newly appended completion entry
+    state = new State(ctx);
+    updateWidget(ctx, state);
+
+    ctx.ui.notify(
+      `Compressed mini-task "${handoff.task.id}". Context freed.`,
+      "info",
+    );
+
+    // Inject continuation message for the LLM
+    const parentInfo = handoff.task.parentId
+      ? ` (resuming parent: ${handoff.task.parentId})`
+      : "";
+
+    pi.sendMessage(
+      {
+        customType: "mini-task",
+        content: `mini_task_handoff complete for "${handoff.task.id}"${parentInfo}. Context has been compressed into a summary above. Read the summary to understand your current state, then: ${handoff.nextStep}`,
+        display: false,
+      },
+      {
+        triggerTurn: true,
+      },
+    );
   });
 }
