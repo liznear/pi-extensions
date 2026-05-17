@@ -1,7 +1,6 @@
 import { complete } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
-  AgentEndEvent,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -12,7 +11,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 
-const DETECTION_SYSTEM_PROMPT = `You analyze whether a user message is a correction to the AI assistant's previous behavior or output.
+const DETECTION_SYSTEM_PROMPT = `You analyze whether the latest user message is a correction to the AI assistant's previous behavior or output.
+
+You are given the last 2 turns of conversation (user → assistant → user → assistant) plus whether the previous run was aborted by the user.
 
 A correction is when the user:
 - Points out something the AI did wrong or suboptimally
@@ -26,6 +27,8 @@ It is NOT a correction if the user is:
 - Providing new instructions for a new task
 - Simply continuing the conversation
 - Giving positive feedback
+
+Important: If the previous run was aborted by the user, the latest message is more likely to be a correction, since the user cancelled the AI's work.
 
 Use the report_analysis tool to report your findings.`;
 
@@ -55,11 +58,14 @@ interface AnalysisResult {
   learning?: string;
 }
 
-function extractLastUserText(event: AgentEndEvent): string | undefined {
-  const messages = event.messages;
+/** Extract the text content of the last user message. */
+function extractLastUserText(messages: unknown[]): string | undefined {
   if (!messages || messages.length === 0) return undefined;
 
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+  const lastUserMsg = [...messages].reverse().find(
+    (m): m is { role: string; content: string | { type: string; text: string }[] } =>
+      (m as any).role === "user",
+  );
   if (!lastUserMsg) return undefined;
 
   const content =
@@ -73,10 +79,25 @@ function extractLastUserText(event: AgentEndEvent): string | undefined {
   return content.trim() || undefined;
 }
 
+/** Extract the last N complete turns (user→assistant) from the message array. */
+function extractLastTurns(messages: unknown[], turns: number): unknown[] {
+  if (!messages || messages.length === 0) return [];
+
+  const userIndices = messages
+    .map((m, i) => ((m as any).role === "user" ? i : -1))
+    .filter((i) => i >= 0);
+
+  if (userIndices.length < 2) return messages;
+
+  const startIdx = userIndices[Math.max(0, userIndices.length - turns)];
+  return messages.slice(startIdx);
+}
+
 async function detectCorrection(
   ctx: ExtensionContext,
   conversationText: string,
   userText: string,
+  previousAborted: boolean,
 ): Promise<AnalysisResult | undefined> {
   const model = ctx.model;
 
@@ -85,7 +106,7 @@ async function detectCorrection(
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok || !auth.apiKey) return undefined;
 
-  // Truncate conversation to avoid huge payloads
+  // Truncate conversation to avoid oversized payloads
   const maxChars = 15000;
   const truncatedConv =
     conversationText.length > maxChars
@@ -102,7 +123,7 @@ async function detectCorrection(
           content: [
             {
               type: "text",
-              text: `<conversation>\n${truncatedConv}\n</conversation>\n\nLatest user message:\n${userText}`,
+              text: `<conversation>\n${truncatedConv}\n</conversation>\n\nPrevious run was aborted by the user: ${previousAborted}\n\nLatest user message:\n${userText}`,
             },
           ],
           timestamp: Date.now(),
@@ -135,10 +156,14 @@ async function detectCorrection(
 
 function appendLearningToAgentsMd(cwd: string, learning: string): boolean {
   const agentsMdPath = join(cwd, "AGENTS.md");
-  if (!existsSync(agentsMdPath)) return false;
+  const sectionHeader = "## Auto-Learnings";
+
+  if (!existsSync(agentsMdPath)) {
+    writeFileSync(agentsMdPath, `# Agents\n\n${sectionHeader}\n- ${learning}\n`, "utf8");
+    return true;
+  }
 
   const existing = readFileSync(agentsMdPath, "utf8");
-  const sectionHeader = "## Auto-Learnings";
 
   let updated: string;
   if (existing.includes(sectionHeader)) {
@@ -154,16 +179,31 @@ function appendLearningToAgentsMd(cwd: string, learning: string): boolean {
   return true;
 }
 
+// Track whether the previous agent run was aborted by the user.
+let previousRunAborted = false;
+
 export default function (pi: ExtensionAPI) {
   pi.on("agent_end", async (event, ctx) => {
     try {
-      const userText = extractLastUserText(event);
+      const aborted = previousRunAborted;
+      // Save abort state for the next run before processing this one.
+      previousRunAborted = ctx.signal?.aborted ?? false;
+
+      const messages = event.messages;
+      const userText = extractLastUserText(messages);
       if (!userText) return;
 
+      // Extract only the last 2 turns for focused context.
+      const lastTwoTurns = extractLastTurns(messages, 2);
       const conversationText = serializeConversation(
-        convertToLlm(event.messages),
+        convertToLlm(lastTwoTurns),
       );
-      const result = await detectCorrection(ctx, conversationText, userText);
+      const result = await detectCorrection(
+        ctx,
+        conversationText,
+        userText,
+        aborted,
+      );
       if (!result?.isCorrection || !result.learning) return;
 
       const updated = appendLearningToAgentsMd(ctx.cwd, result.learning);
