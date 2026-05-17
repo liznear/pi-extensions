@@ -7,6 +7,7 @@ import {
   convertToLlm,
   serializeConversation,
 } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -63,8 +64,12 @@ function extractLastUserText(messages: unknown[]): string | undefined {
   if (!messages || messages.length === 0) return undefined;
 
   const lastUserMsg = [...messages].reverse().find(
-    (m): m is { role: string; content: string | { type: string; text: string }[] } =>
-      (m as any).role === "user",
+    (
+      m,
+    ): m is {
+      role: string;
+      content: string | { type: string; text: string }[];
+    } => (m as any).role === "user",
   );
   if (!lastUserMsg) return undefined;
 
@@ -80,7 +85,10 @@ function extractLastUserText(messages: unknown[]): string | undefined {
 }
 
 /** Extract the last N complete turns (user→assistant) from the message array. */
-function extractLastTurns(messages: unknown[], turns: number): unknown[] {
+function extractLastTurns(
+  messages: AgentMessage[],
+  turns: number,
+): AgentMessage[] {
   if (!messages || messages.length === 0) return [];
 
   const userIndices = messages
@@ -159,7 +167,11 @@ function appendLearningToAgentsMd(cwd: string, learning: string): boolean {
   const sectionHeader = "## Auto-Learnings";
 
   if (!existsSync(agentsMdPath)) {
-    writeFileSync(agentsMdPath, `# Agents\n\n${sectionHeader}\n- ${learning}\n`, "utf8");
+    writeFileSync(
+      agentsMdPath,
+      `# Agents\n\n${sectionHeader}\n- ${learning}\n`,
+      "utf8",
+    );
     return true;
   }
 
