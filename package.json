@@ -1,34 +1,40 @@
 {
-  "name": "pi-extensions-nearsyh",
-  "version": "0.1.0",
-  "private": false,
-  "description": "Pi extension bundle: ask-question, custom-footer, custom-agents, diff, review, todo, tool-rendering",
-  "license": "MIT",
-  "keywords": [
-    "pi-package",
-    "pi",
-    "pi-extension"
-  ],
-  "pi": {
-    "extensions": [
-      "ask-question/index.ts",
-      "custom-footer/index.ts",
-      "diff/index.ts",
-      "custom-agents/index.ts",
-      "review/index.ts",
-      "todo/index.ts",
-      "tool-rendering/index.ts",
-      "explain/index.ts",
-      "mini-task/index.ts",
-      "auto-correct/index.ts"
-    ],
-    "skills": [
-      "mini-task/skills/mini-task"
-    ]
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
-  }
+	"name": "pi-extensions-nearsyh",
+	"version": "0.1.0",
+	"private": false,
+	"description": "Pi extension bundle: ask-question, custom-footer, custom-agents, diff, review, todo, tool-rendering",
+	"license": "MIT",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension"
+	],
+	"pi": {
+		"extensions": [
+			"ask-question/index.ts",
+			"custom-footer/index.ts",
+			"diff/index.ts",
+			"custom-agents/index.ts",
+			"review/index.ts",
+			"todo/index.ts",
+			"tool-rendering/index.ts",
+			"explain/index.ts",
+			"mini-task/index.ts",
+			"auto-correct/index.ts"
+		],
+		"skills": [
+			"mini-task/skills/mini-task"
+		]
+	},
+	"scripts": {
+		"lint": "bunx --bun @biomejs/biome check --write"
+	},
+	"dependencies": {
+		"@pierre/diffs": "^1.2.10"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
 }

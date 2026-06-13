@@ -1,14 +1,24 @@
-import { parseUnifiedDiff } from "./diff-view-model.js";
-import { CONTEXT_QUERY_KEYS, REVIEW_ROUTES } from "./review-protocol.js";
+import { parseUnifiedDiff } from "./diff-view-model.js"
+import { CONTEXT_QUERY_KEYS, REVIEW_ROUTES } from "./review-protocol.js"
 
-export function renderReviewPage(input: { diff: string; target: string; targetLabel: string; cwd: string; submitEnabled: boolean }): string {
-	const files = parseUnifiedDiff(input.diff);
-	const encodedFiles = JSON.stringify(files).replace(/</g, "\\u003c");
-	const encodedRoutes = JSON.stringify(REVIEW_ROUTES).replace(/</g, "\\u003c");
-	const encodedContextQueryKeys = JSON.stringify(CONTEXT_QUERY_KEYS).replace(/</g, "\\u003c");
-	const emptyState = files.length === 0
-		? `<div class="empty">No diff output for <code>${escapeHtml(input.targetLabel)}</code>.</div>`
-		: "";
+export function renderReviewPage(input: {
+	diff: string
+	target: string
+	targetLabel: string
+	cwd: string
+	submitEnabled: boolean
+}): string {
+	const files = parseUnifiedDiff(input.diff)
+	const encodedFiles = JSON.stringify(files).replace(/</g, "\\u003c")
+	const encodedRoutes = JSON.stringify(REVIEW_ROUTES).replace(/</g, "\\u003c")
+	const encodedContextQueryKeys = JSON.stringify(CONTEXT_QUERY_KEYS).replace(
+		/</g,
+		"\\u003c",
+	)
+	const emptyState =
+		files.length === 0
+			? `<div class="empty">No diff output for <code>${escapeHtml(input.targetLabel)}</code>.</div>`
+			: ""
 
 	return `<!doctype html>
 <html>
@@ -353,7 +363,7 @@ export function renderReviewPage(input: { diff: string; target: string; targetLa
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
-        .replace(/\"/g, "&quot;")
+        .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
     }
 
@@ -795,9 +805,8 @@ export function renderReviewPage(input: { diff: string; target: string; targetLa
     renderDiff();
   </script>
 </body>
-</html>`;
+</html>`
 }
-
 
 function escapeHtml(input: string): string {
 	return input
@@ -805,5 +814,5 @@ function escapeHtml(input: string): string {
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#039;");
+		.replace(/'/g, "&#039;")
 }
