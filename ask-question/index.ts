@@ -9,10 +9,11 @@
  * clarifications, or confirmations.
  */
 
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-} from "@mariozechner/pi-coding-agent"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	getSelectListTheme,
+} from "@earendil-works/pi-coding-agent"
 import {
 	Editor,
 	type EditorTheme,
@@ -20,8 +21,8 @@ import {
 	matchesKey,
 	Text,
 	truncateToWidth,
-} from "@mariozechner/pi-tui"
-import { Type } from "@sinclair/typebox"
+} from "@earendil-works/pi-tui"
+import { Type } from "typebox"
 
 // ============================================================
 // Types
@@ -129,6 +130,7 @@ async function askSingleQuestion(
 
 		const editorTheme: EditorTheme = {
 			borderColor: (s) => theme.fg("accent", s),
+			selectList: getSelectListTheme(),
 		}
 		const editor = new Editor(tui, editorTheme)
 
@@ -268,6 +270,7 @@ async function askMultipleQuestions(
 
 			const editorTheme: EditorTheme = {
 				borderColor: (s) => theme.fg("accent", s),
+				selectList: getSelectListTheme(),
 			}
 			const editor = new Editor(tui, editorTheme)
 
@@ -386,12 +389,12 @@ async function askMultipleQuestions(
 					const opt = opts[optionIndex]
 					if (opt.isOther) {
 						inputMode = true
-						inputQuestionId = q?.id
+						inputQuestionId = q?.id ?? null
 						editor.setText("")
 						refresh()
 						return
 					}
-					saveAnswer(q?.id, opt.label, false, optionIndex)
+					if (q) saveAnswer(q.id, opt.label, false, optionIndex)
 					advanceAfterAnswer()
 					return
 				}
@@ -633,7 +636,7 @@ export default function askUser(pi: ExtensionAPI) {
 						type: "text",
 						text: result.wasCustom
 							? `User answered: ${result.answer}`
-							: `User selected: ${result.optionIndex! + 1}. ${result.answer}`,
+							: `User selected: ${(result.optionIndex ?? 0) + 1}. ${result.answer}`,
 					},
 				],
 				details: {

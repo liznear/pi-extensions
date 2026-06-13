@@ -1,9 +1,10 @@
 import { basename } from "node:path"
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-} from "@mariozechner/pi-coding-agent"
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui"
+import {
+	buildSessionContext,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent"
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 
 function formatCount(n: number): string {
 	if (n < 1_000) return `${n}`
@@ -221,7 +222,10 @@ function estimateMessageSegments(message: TokenMessage): TokenSegment[] {
 }
 
 function getContextTokenSegments(ctx: ExtensionContext): TokenSegment[] {
-	const context = ctx.sessionManager.buildSessionContext()
+	const context = buildSessionContext(
+		ctx.sessionManager.getBranch(),
+		ctx.sessionManager.getLeafId(),
+	)
 	const messages = context.messages as TokenMessage[]
 	const systemSegment: TokenSegment = {
 		category: "system",
@@ -477,7 +481,7 @@ export default function customFooterExtension(pi: ExtensionAPI): void {
 			if (action === "on" || action === "enable" || action === "") {
 				enabled = true
 				applyCustomFooter(ctx, () => lastRunDurationMs)
-				ctx.ui.notify("Custom footer enabled", "success")
+				ctx.ui.notify("Custom footer enabled", "info")
 				return
 			}
 

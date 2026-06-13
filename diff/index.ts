@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { renderSteeringPrompt } from "./review-comments.js"
 import { startReviewSession } from "./review-orchestration.js"
 import type { WebReviewServer } from "./web-review.js"
@@ -41,12 +41,11 @@ export default function diffExtension(pi: ExtensionAPI): void {
 
 					pi.sendUserMessage(renderSteeringPrompt(comments), {
 						deliverAs: "steer",
-						triggerTurn: true,
 					})
 
 					ctx.ui.notify(
 						`Received ${comments.length} comments from web UI!`,
-						"success",
+						"info",
 					)
 				},
 			})

@@ -2,9 +2,12 @@ import { spawn } from "node:child_process"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
-import { type AutocompleteItem, Text } from "@mariozechner/pi-tui"
-import { Type } from "@sinclair/typebox"
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent"
+import { type AutocompleteItem, Text } from "@earendil-works/pi-tui"
+import { Type } from "typebox"
 import { type AgentProfile, loadAgentProfiles } from "./utils.js"
 
 const AGENTS_DIR = join(homedir(), ".pi", "agent", "agents")
@@ -30,13 +33,21 @@ function parseSubagentText(stdout: string): string {
 	for (const line of stdout.split("\n")) {
 		if (!line.trim()) continue
 		try {
-			const event = JSON.parse(line) as { type?: string; message?: any }
+			const event = JSON.parse(line) as {
+				type?: string
+				message?: {
+					role?: string
+					content?: string | { type: string; text?: string }[]
+				}
+			}
 			if (event.type === "message_end" && event.message?.role === "assistant") {
 				const content = event.message.content
 				if (typeof content === "string") {
 					lastAssistantText = content
 				} else if (Array.isArray(content)) {
-					const textPart = content.find((c: any) => c.type === "text")
+					const textPart = content.find(
+						(c: { type: string }) => c.type === "text",
+					)
 					if (textPart?.text) lastAssistantText = textPart.text
 				}
 			}
@@ -117,7 +128,11 @@ export default function agentExtension(pi: ExtensionAPI): void {
 		return profiles.find((p) => p.name === activeAgentName)
 	}
 
-	function setActiveAgent(nameOrId: string, notify = true, ctx?: any): boolean {
+	function setActiveAgent(
+		nameOrId: string,
+		notify = true,
+		ctx?: ExtensionContext,
+	): boolean {
 		const profile = profiles.find(
 			(p) => (p.name === nameOrId || p.id === nameOrId) && p.type === "primary",
 		)
@@ -131,7 +146,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
 		return true
 	}
 
-	function cyclePrimary(ctx: any): void {
+	function cyclePrimary(ctx: ExtensionContext): void {
 		const primaries = profiles.filter((p) => p.type === "primary")
 		if (primaries.length === 0) {
 			ctx.ui.notify("No primary agents found in ~/.pi/agent/agents", "warning")
@@ -145,7 +160,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
 		setActiveAgent(next.name, true, ctx)
 	}
 
-	function refreshStatus(ctx: any): void {
+	function refreshStatus(ctx: ExtensionContext): void {
 		const active = getActiveProfile()
 		ctx.ui.setStatus("agent-profile", active ? `🤖 ${active.name}` : undefined)
 	}
@@ -209,6 +224,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "run_subagent",
+		label: "Run Subagent",
 		description:
 			"Run a subagent with isolated context. Input prompt is sent without main-agent history.",
 		promptGuidelines: [
@@ -250,6 +266,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
 						},
 					],
 					isError: true,
+					details: {},
 				}
 			}
 
@@ -263,6 +280,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
 						},
 					],
 					isError: true,
+					details: {},
 				}
 			}
 
@@ -284,7 +302,8 @@ export default function agentExtension(pi: ExtensionAPI): void {
 		const entries = ctx.sessionManager.getEntries()
 		const state = entries
 			.filter(
-				(e: any) => e.type === "custom" && e.customType === "agent-extension",
+				(e: { type: string; customType?: string }) =>
+					e.type === "custom" && e.customType === "agent-extension",
 			)
 			.pop() as { data?: PersistedState } | undefined
 		activeAgentName = state?.data?.activeAgentName

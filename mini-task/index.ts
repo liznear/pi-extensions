@@ -22,6 +22,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
@@ -87,8 +88,10 @@ class State {
 							const e = branch[i]
 							if (
 								e.type === "message" &&
-								(e as any).message?.role === "toolResult" &&
-								(e as any).message?.toolName === "mini_task_start"
+								(e as { message?: { role?: string; toolName?: string } })
+									.message?.role === "toolResult" &&
+								(e as { message?: { role?: string; toolName?: string } })
+									.message?.toolName === "mini_task_start"
 							) {
 								startEntryId = e.id
 								break
@@ -105,8 +108,13 @@ class State {
 			}
 
 			if (entry.customType === "mini-task-complete") {
-				const data = entry.data as any
-				if (data) {
+				const data = entry.data as {
+					id?: string
+					title?: string
+					description?: string
+					parentId?: string | null
+				}
+				if (data?.id) {
 					const task = this.allTasks.get(data.id)
 					if (task) {
 						task.status = "completed"
@@ -177,7 +185,7 @@ let state: State | undefined
 /** Build a task tree string for display. */
 function renderTaskTree(
 	tasks: Map<string, MiniTaskData>,
-	theme: { fg: (color: string, text: string) => string },
+	theme: Theme,
 ): string[] {
 	const lines: string[] = []
 	const roots = [...tasks.values()].filter((t) => !t.parentId)
@@ -211,7 +219,8 @@ function updateWidget(ctx: ExtensionContext, state: State) {
 		return
 	}
 
-	const current = state.currentTask()!
+	const current = state.currentTask()
+	if (!current) return
 	const depth = state.taskStack.length
 	const lines: string[] = []
 	if (depth > 1) {
@@ -238,12 +247,12 @@ function updateWidget(ctx: ExtensionContext, state: State) {
 class TaskDashboardComponent {
 	private tasks: Map<string, MiniTaskData>
 	private stack: MiniTaskData[]
-	private theme: any
+	private theme: Theme
 	private onClose: () => void
 	private cachedWidth?: number
 	private cachedLines?: string[]
 
-	constructor(state: State, theme: any, onClose: () => void) {
+	constructor(state: State, theme: Theme, onClose: () => void) {
 		this.tasks = state.allTasks
 		this.stack = state.taskStack
 		this.theme = theme
@@ -437,7 +446,8 @@ export default function (pi: ExtensionAPI) {
 
 			// Show interactive dashboard
 			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-				return new TaskDashboardComponent(state!, theme, () => done())
+				if (!state) throw new Error("Mini-task state not initialized")
+				return new TaskDashboardComponent(state, theme, () => done())
 			})
 		},
 	})
@@ -453,13 +463,17 @@ export default function (pi: ExtensionAPI) {
 
 			if (!state?.pendingHandoff) return
 
-			const handoff = state?.pendingHandoff!
-			state!.pendingHandoff = null
+			const handoff = state.pendingHandoff
+			state.pendingHandoff = null
 
 			const sm = ctx.sessionManager
 			let newLeafId: string
 			try {
-				newLeafId = (sm as any).branchWithSummary(
+				newLeafId = (
+					sm as unknown as {
+						branchWithSummary: (...args: unknown[]) => string
+					}
+				).branchWithSummary(
 					handoff.task.startEntryId,
 					`(handoff from ${handoff.origin})\n${handoff.enrichedSummary}`,
 					undefined,
@@ -535,14 +549,14 @@ export default function (pi: ExtensionAPI) {
 		parameters: StartParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!isEnabled) {
+			if (!isEnabled || !state) {
 				return disabledMessage
 			}
 			const sm = ctx.sessionManager
 
 			// Generate unique task ID
-			const id = state?.uniqueSlug(params.title)
-			const parentId = state?.currentTask()?.id ?? null
+			const id = state.uniqueSlug(params.title)
+			const parentId = state.currentTask()?.id ?? null
 			const startTag = `${id}-start`
 
 			// Build task data
@@ -616,11 +630,11 @@ export default function (pi: ExtensionAPI) {
 		parameters: HandoffParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!isEnabled) {
+			if (!isEnabled || !state) {
 				return disabledMessage
 			}
 
-			const currentTask = state?.handoffTask()
+			const currentTask = state.handoffTask()
 			if (!currentTask) {
 				return {
 					content: [
@@ -687,7 +701,7 @@ export default function (pi: ExtensionAPI) {
 			// Defer branching until agent_end so the aborted message stays on the old branch
 			currentTask.status = "completed"
 
-			state!.pendingHandoff = {
+			state.pendingHandoff = {
 				task: currentTask,
 				origin,
 				enrichedSummary,
@@ -752,7 +766,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: TreeParams,
 
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			if (!isEnabled) {
+			if (!isEnabled || !state) {
 				return disabledMessage
 			}
 
@@ -777,16 +791,17 @@ export default function (pi: ExtensionAPI) {
 
 			// Task tree
 			lines.push("")
-			if (state?.allTasks.size === 0) {
+			if (state.allTasks.size === 0) {
 				lines.push("No mini-tasks in this session.")
 			} else {
-				const completed = [...state?.allTasks.values()].filter(
+				const allTasks = state.allTasks
+				const completed = [...allTasks.values()].filter(
 					(t) => t.status === "completed",
 				).length
-				lines.push(`Tasks: ${completed}/${state?.allTasks.size} completed`)
+				lines.push(`Tasks: ${completed}/${allTasks.size} completed`)
 				lines.push("")
 
-				const roots = [...state?.allTasks.values()].filter((t) => !t.parentId)
+				const roots = [...allTasks.values()].filter((t) => !t.parentId)
 
 				function renderTask(task: MiniTaskData, depth: number) {
 					const indent = "  ".repeat(depth)
@@ -795,7 +810,7 @@ export default function (pi: ExtensionAPI) {
 					if (task.description) {
 						lines.push(`${indent}  ${task.description.slice(0, 80)}`)
 					}
-					const children = [...state?.allTasks.values()].filter(
+					const children = [...allTasks.values()].filter(
 						(t) => t.parentId === task.id,
 					)
 					for (const child of children) renderTask(child, depth + 1)
@@ -806,11 +821,11 @@ export default function (pi: ExtensionAPI) {
 
 			// Active stack
 			lines.push("")
-			if (!state?.empty()) {
+			if (!state.empty()) {
 				lines.push("Active stack (innermost first):")
-				for (let i = state?.taskStack.length - 1; i >= 0; i--) {
-					const t = state?.taskStack[i]
-					const prefix = i === state?.taskStack.length - 1 ? "\u2192 " : "  "
+				for (let i = state.taskStack.length - 1; i >= 0; i--) {
+					const t = state.taskStack[i]
+					const prefix = i === state.taskStack.length - 1 ? "\u2192 " : "  "
 					lines.push(`  ${prefix}${t.id}: ${t.title}`)
 				}
 			} else {
@@ -833,16 +848,16 @@ export default function (pi: ExtensionAPI) {
 	// -----------------------------------------------------------------------
 
 	pi.on("tool_execution_end", async (event, ctx) => {
-		if (!isEnabled) {
+		if (!isEnabled || !state) {
 			return
 		}
 		if (
 			event.toolName === "mini_task_start" ||
 			event.toolName === "mini_task_handoff"
 		) {
-			updateWidget(ctx, state!)
+			updateWidget(ctx, state)
 			if (event.toolName === "mini_task_start") {
-				const task = state?.currentTask()
+				const task = state.currentTask()
 				if (task && task.status === "active") {
 					// The toolResult message is now the leaf. This is our true start point.
 					task.startEntryId = ctx.sessionManager.getLeafId()
@@ -857,13 +872,17 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (!state?.pendingHandoff) return
 
-		const handoff = state?.pendingHandoff!
-		state!.pendingHandoff = null
+		const handoff = state.pendingHandoff
+		state.pendingHandoff = null
 
 		const sm = ctx.sessionManager
 		let newLeafId: string
 		try {
-			newLeafId = (sm as any).branchWithSummary(
+			newLeafId = (
+				sm as unknown as {
+					branchWithSummary: (...args: unknown[]) => string
+				}
+			).branchWithSummary(
 				handoff.task.startEntryId,
 				`(handoff from ${handoff.origin})\n${handoff.enrichedSummary}`,
 				undefined,

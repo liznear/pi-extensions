@@ -14,8 +14,8 @@ import { execSync } from "node:child_process"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { platform, tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
-import { Type } from "@sinclair/typebox"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 
 const TOOL_NAME = "create_html_page"
 

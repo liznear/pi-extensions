@@ -69,7 +69,11 @@ function extractLastUserText(messages: unknown[]): string | undefined {
 		): m is {
 			role: string
 			content: string | { type: string; text: string }[]
-		} => (m as any).role === "user",
+		} =>
+			typeof m === "object" &&
+			m !== null &&
+			"role" in m &&
+			(m as { role: string }).role === "user",
 	)
 	if (!lastUserMsg) return undefined
 
@@ -92,7 +96,14 @@ function extractLastTurns(
 	if (!messages || messages.length === 0) return []
 
 	const userIndices = messages
-		.map((m, i) => ((m as any).role === "user" ? i : -1))
+		.map((m, i) =>
+			typeof m === "object" &&
+			m !== null &&
+			"role" in m &&
+			(m as { role: string }).role === "user"
+				? i
+				: -1,
+		)
 		.filter((i) => i >= 0)
 
 	if (userIndices.length < 2) return messages

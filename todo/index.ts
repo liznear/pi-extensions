@@ -1,11 +1,11 @@
-import { StringEnum } from "@mariozechner/pi-ai"
+import { StringEnum } from "@earendil-works/pi-ai"
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 	Theme,
-} from "@mariozechner/pi-coding-agent"
-import { Text, truncateToWidth } from "@mariozechner/pi-tui"
-import { type Static, Type } from "@sinclair/typebox"
+} from "@earendil-works/pi-coding-agent"
+import { Text, truncateToWidth } from "@earendil-works/pi-tui"
+import { type Static, Type } from "typebox"
 
 type TodoStatus = "pending" | "wip" | "completed" | "cancelled"
 
@@ -69,12 +69,16 @@ function coerceSnapshot(value: unknown): TodoItem[] | null {
 	if (!Array.isArray(value)) return null
 
 	const rawItems = value.filter(
-		(i) =>
-			i &&
+		(i): i is TodoSnapshotItem =>
+			i !== null &&
+			i !== undefined &&
 			typeof i === "object" &&
-			typeof (i as any).order === "number" &&
-			typeof (i as any).description === "string" &&
-			isTodoStatus((i as any).status),
+			"order" in i &&
+			typeof (i as TodoSnapshotItem).order === "number" &&
+			"description" in i &&
+			typeof (i as TodoSnapshotItem).description === "string" &&
+			"status" in i &&
+			isTodoStatus((i as TodoSnapshotItem).status),
 	) as TodoSnapshotItem[]
 
 	if (rawItems.length !== value.length) return null
@@ -179,7 +183,14 @@ export default function todoExtension(pi: ExtensionAPI): void {
 
 		const branch = ctx.sessionManager.getBranch()
 		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i] as any
+			const entry = branch[i] as {
+				type?: string
+				message?: {
+					role?: string
+					toolName?: string
+					details?: { todos?: unknown }
+				}
+			}
 			if (
 				entry?.type !== "message" ||
 				entry.message?.role !== "toolResult" ||
