@@ -13,14 +13,14 @@
  * Command (user-facing):
  *   /mini-task          - Enable mini-task management, show dashboard
  *
- * Requires: User must run /mini-task once per session to enable tree navigation.
+ * Warning!!!!:
+ *   this requires a patch on Pi to set expandPromptTemplates as true in sendUserMessage.
  */
 
 import { dirname, join } from "node:path"
 import type {
 	AgentToolResult,
 	ExtensionAPI,
-	ExtensionCommandContext,
 	ExtensionContext,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
@@ -174,8 +174,8 @@ class State {
 }
 
 // Enable by default once expandPromptTemplates is supported in sendUserMessage.
-let isEnabled = false
-let commandCtx: ExtensionCommandContext | undefined
+let isEnabled = true
+// let commandCtx: ExtensionCommandContext | undefined
 let state: State | undefined
 
 // ---------------------------------------------------------------------------
@@ -396,8 +396,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Reconstruct state on session events
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
-		commandCtx = undefined
-		isEnabled = false
+		isEnabled = true
 		state = new State(ctx)
 		updateWidget(ctx, state)
 	})
@@ -436,7 +435,6 @@ export default function (pi: ExtensionAPI) {
 			} else if (arg === "on") {
 				isEnabled = true
 				ctx.ui.notify("Mini-task management enabled", "info")
-				commandCtx = ctx
 				return
 			}
 
@@ -711,12 +709,9 @@ export default function (pi: ExtensionAPI) {
 				decisions: params.decisions || [],
 			}
 
-			// Currently, this is not supported.
-			// pi.sendUserMessage("/mini-task-handoff", {
-			//   deliverAs: "steer",
-			//   // This is only available in my own fork.
-			//   expandPromptTemplates: true,
-			// });
+			pi.sendUserMessage("/mini-task-handoff", {
+				deliverAs: "followUp",
+			})
 			return {
 				content: [
 					{
@@ -864,69 +859,5 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 		}
-	})
-
-	pi.on("agent_end", async (_event, ctx) => {
-		if (!isEnabled) {
-			return
-		}
-		if (!state?.pendingHandoff) return
-
-		const handoff = state.pendingHandoff
-		state.pendingHandoff = null
-
-		const sm = ctx.sessionManager
-		let newLeafId: string
-		try {
-			newLeafId = (
-				sm as unknown as {
-					branchWithSummary: (...args: unknown[]) => string
-				}
-			).branchWithSummary(
-				handoff.task.startEntryId,
-				`(handoff from ${handoff.origin})\n${handoff.enrichedSummary}`,
-				undefined,
-				true,
-			)
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err)
-			ctx.ui.notify(`Error during context compression: ${message}`, "error")
-			return
-		}
-
-		// Navigate to the compressed branch
-		await commandCtx?.navigateTree(newLeafId, {
-			summarize: false,
-		})
-
-		pi.appendEntry("mini-task-complete", {
-			id: handoff.task.id,
-			title: handoff.task.title,
-			description: handoff.task.description,
-			parentId: handoff.task.parentId,
-			summary: handoff.summary,
-			filesChanged: handoff.filesChanged,
-			decisions: handoff.decisions,
-		})
-
-		// Force state reconstruction to include the newly appended completion entry
-		state = new State(ctx)
-		updateWidget(ctx, state)
-
-		// Inject continuation message for the LLM
-		const parentInfo = handoff.task.parentId
-			? ` (resuming parent: ${handoff.task.parentId})`
-			: ""
-
-		pi.sendMessage(
-			{
-				customType: "mini-task",
-				content: `mini_task_handoff complete for "${handoff.task.id}"${parentInfo}. Context has been compressed into a summary above. Read the summary to understand your current state, then: ${handoff.nextStep}`,
-				display: false,
-			},
-			{
-				triggerTurn: true,
-			},
-		)
 	})
 }
