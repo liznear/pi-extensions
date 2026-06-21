@@ -1,13 +1,13 @@
 ---
 name: mini-task
-description: Context management via structured mini-tasks. Use mini_task_start to explicitly state your plan and begin tracked work, mini_task_handoff to compress context when done, mini_task_tree to orient. Break large tasks into mini-tasks. Experiments are mini-tasks too.
+description: Context management via structured mini-tasks. Use mini_task_start to explicitly state your plan and begin tracked work, mini_task_handoff to compress context when done, mini_task_tree to orient. Break large tasks into mini-tasks. Experiments are mini-tasks too. Use this where there are multiple steps, one step needs to collect a lot of information to draw the final conclusion, and only the conclusion is useful for following steps.
 ---
 
 # Mini-Task: Structured Context Management
 
 Your context window is limited. Mini-tasks give you **explicit control** over when context is compressed.
 
-**Core idea:** Wrap every focused unit of work in a mini-task. When done, hand off — the entire conversation range is replaced by a concise summary.
+**Core idea:** A top-level ask may requires multiple steps, and some steps may require a lot of information to draw the final conclusion. However, the final conclusion is the most useful piece of information for following steps. Instead of including all these information in context, this tool wraps every focused unit of work in a mini-task. When done, hand off — the entire conversation range is replaced by a concise summary. In this way, only important information is kept in context.
 
 ## Prerequisites
 
