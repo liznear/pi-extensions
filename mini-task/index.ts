@@ -459,6 +459,8 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
+			await ctx.waitForIdle()
+
 			if (!state?.pendingHandoff) return
 
 			const handoff = state.pendingHandoff
