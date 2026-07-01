@@ -2,7 +2,7 @@
 	"name": "pi-extensions-nearsyh",
 	"version": "0.1.0",
 	"private": false,
-	"description": "Pi extension bundle: ask-question, custom-footer, custom-agents, diff, todo, explain, mini-task, auto-correct",
+	"description": "Pi extension bundle: ask-question, custom-footer, custom-agents, diff, todo, explain, mini-task",
 	"license": "MIT",
 	"keywords": [
 		"pi-package",
@@ -17,8 +17,7 @@
 			"custom-agents/index.ts",
 			"todo/index.ts",
 			"explain/index.ts",
-			"mini-task/index.ts",
-			"auto-correct/index.ts"
+			"mini-task/index.ts"
 		],
 		"skills": [
 			"mini-task/skills/mini-task"
