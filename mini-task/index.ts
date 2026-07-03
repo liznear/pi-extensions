@@ -31,14 +31,22 @@ import { Type } from "typebox"
 // Types
 // ---------------------------------------------------------------------------
 
+type TaskStatus = "pending" | "wip" | "completed" | "cancelled"
+
+interface PlannedTask {
+	id: string
+	title: string
+	description?: string
+	depends_on?: string[]
+	status: TaskStatus
+}
+
 interface MiniTaskData {
 	id: string
 	title: string
 	description: string
 	parentId: string | null
-	/** The tag created in the session tree to mark the start of this task */
 	startTag: string
-	/** The session entry ID corresponding to the start of this task (the tool result message) */
 	startEntryId: string | null
 	status: "active" | "completed"
 }
@@ -61,6 +69,7 @@ interface PendingHandoff {
 class State {
 	taskStack: MiniTaskData[] = []
 	pendingHandoff: PendingHandoff | null = null
+	plannedTasks: PlannedTask[] = []
 
 	// Map of all tasks in the current branch history, keyed by task `id`.
 	// This map is rebuilt when we switch branch.
@@ -70,10 +79,18 @@ class State {
 		this.taskStack = []
 		this.allTasks = new Map()
 		this.pendingHandoff = null
+		this.plannedTasks = []
 
 		const branch = ctx.sessionManager.getBranch()
 		for (const entry of branch) {
 			if (entry.type !== "custom") continue
+
+			if (entry.customType === "mini-task-plan") {
+				const data = entry.data as { tasks?: PlannedTask[] } | undefined
+				if (data?.tasks) {
+					this.plannedTasks = data.tasks.map((t) => ({ ...t }))
+				}
+			}
 
 			if (entry.customType === "mini-task-start") {
 				const data = entry.data as MiniTaskData | undefined
@@ -104,6 +121,9 @@ class State {
 						status: "active",
 						startEntryId,
 					})
+
+					const plan = this.plannedTasks.find((p) => p.id === data.id)
+					if (plan && plan.status === "pending") plan.status = "wip"
 				}
 			}
 
@@ -130,6 +150,9 @@ class State {
 							status: "completed",
 						})
 					}
+
+					const plan = this.plannedTasks.find((p) => p.id === data.id)
+					if (plan) plan.status = "completed"
 				}
 			}
 		}
@@ -214,30 +237,58 @@ function renderTaskTree(
 
 /** Update the active-task widget above the editor. */
 function updateWidget(ctx: ExtensionContext, state: State) {
-	if (state.empty()) {
+	if (state.plannedTasks.length === 0) {
 		ctx.ui.setWidget("mini-task", undefined)
 		return
 	}
 
-	const current = state.currentTask()
-	if (!current) return
-	const depth = state.taskStack.length
-	const lines: string[] = []
-	if (depth > 1) {
-		// TODO: tweak UI
-		lines.push(
-			...state.taskStack
-				.slice(0, -1)
-				.map((t) => t.id)
-				.reverse(),
-		)
-	}
-	lines.push(
-		ctx.ui.theme.fg("accent", `\u25cf Task: ${current.id}`) +
-			" " +
-			ctx.ui.theme.fg("muted", current.title),
+	ctx.ui.setWidget(
+		"mini-task",
+		(_tui: unknown, theme: Theme) => {
+			return {
+				invalidate() {},
+				render(width: number): string[] {
+					const activeTasks = state.plannedTasks.filter(
+						(item) =>
+							item.status !== "completed" && item.status !== "cancelled",
+					).length
+					const completedTasks = state.plannedTasks.filter(
+						(item) => item.status === "completed",
+					).length
+					const summary = `${activeTasks} active \u00b7 ${completedTasks}/${state.plannedTasks.length} done`
+					const title = `${theme.fg("accent", theme.bold("Mini Tasks"))}  ${theme.fg("dim", summary)}`
+
+					const lines = [truncateToWidth(` ${title}`, width)]
+					for (const [index, item] of state.plannedTasks.entries()) {
+						const taskStatus = item.status || "pending"
+						const status = {
+							pending: { icon: "\u25cb", color: "dim" as const },
+							wip: { icon: "\u25cf", color: "warning" as const },
+							completed: { icon: "\u2713", color: "success" as const },
+							cancelled: { icon: "\u00d7", color: "error" as const },
+						}[taskStatus] || { icon: "\u25cb", color: "dim" as const }
+
+						const branch =
+							index === state.plannedTasks.length - 1
+								? "\u2517\u2501"
+								: "\u2523\u2501"
+						const description =
+							item.status === "completed" || item.status === "cancelled"
+								? theme.fg("dim", `${item.id}: ${item.title}`)
+								: theme.fg("text", `${item.id}: ${item.title}`)
+						lines.push(
+							truncateToWidth(
+								`  ${theme.fg("dim", branch)} ${theme.fg(status.color, status.icon)} ${description}`,
+								width,
+							),
+						)
+					}
+					return lines
+				},
+			}
+		},
+		{ placement: "aboveEditor" },
 	)
-	ctx.ui.setWidget("mini-task", lines)
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +298,7 @@ function updateWidget(ctx: ExtensionContext, state: State) {
 class TaskDashboardComponent {
 	private tasks: Map<string, MiniTaskData>
 	private stack: MiniTaskData[]
+	private planned: PlannedTask[]
 	private theme: Theme
 	private onClose: () => void
 	private cachedWidth?: number
@@ -255,6 +307,7 @@ class TaskDashboardComponent {
 	constructor(state: State, theme: Theme, onClose: () => void) {
 		this.tasks = state.allTasks
 		this.stack = state.taskStack
+		this.planned = state.plannedTasks
 		this.theme = theme
 		this.onClose = onClose
 	}
@@ -295,6 +348,36 @@ class TaskDashboardComponent {
 		}
 
 		lines.push("")
+
+		// Render planned tasks
+		if (this.planned.length > 0) {
+			lines.push(
+				truncateToWidth(`  ${th.fg("muted", "Planned Tasks:")}`, width),
+			)
+			for (const p of this.planned) {
+				const statusIcon =
+					p.status === "completed"
+						? th.fg("success", "\u2713")
+						: p.status === "wip"
+							? th.fg("warning", "\u25cf")
+							: p.status === "cancelled"
+								? th.fg("error", "\u00d7")
+								: th.fg("dim", "\u25cb")
+
+				const title =
+					p.status === "completed" || p.status === "cancelled"
+						? th.fg("dim", p.title)
+						: th.fg("text", p.title)
+
+				lines.push(
+					truncateToWidth(
+						`    ${statusIcon} ${th.fg("muted", p.id)}: ${title}`,
+						width,
+					),
+				)
+			}
+			lines.push("")
+		}
 
 		if (this.stack.length > 0) {
 			lines.push(truncateToWidth(`  ${th.fg("muted", "Active stack:")}`, width))
@@ -338,16 +421,39 @@ class TaskDashboardComponent {
 // Tool parameter schemas
 // ---------------------------------------------------------------------------
 
-const StartParams = Type.Object({
-	title: Type.String({
-		description: "Short, descriptive title for this mini-task",
-	}),
-	description: Type.Optional(
-		Type.String({
-			description:
-				"What this task aims to accomplish. Be specific about the expected outcome.",
+const PlanParams = Type.Object({
+	tasks: Type.Array(
+		Type.Object({
+			id: Type.String({
+				description:
+					"Unique, short slug identifier for this planned task (e.g. read-configs, implement-auth)",
+			}),
+			title: Type.String({
+				description: "Short descriptive title of the planned task",
+			}),
+			description: Type.Optional(
+				Type.String({
+					description:
+						"Detailed description of the task goals, success criteria, and resources/files to pre-read.",
+				}),
+			),
+			depends_on: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "Optional list of task IDs this task depends on",
+				}),
+			),
 		}),
+		{
+			description:
+				"Full list of planned tasks for this session (always overwrites previous plan)",
+		},
 	),
+})
+
+const StartParams = Type.Object({
+	id: Type.String({
+		description: "The ID of the planned task to start working on",
+	}),
 })
 
 const HandoffParams = Type.Object({
@@ -385,10 +491,15 @@ const TreeParams = Type.Object({})
 
 export default function (pi: ExtensionAPI) {
 	// Discover companion skill
-	const extDir =
-		typeof __dirname !== "undefined"
-			? __dirname
-			: dirname(new URL(import.meta.url).pathname)
+	let extDir = ""
+	try {
+		extDir =
+			typeof __dirname !== "undefined"
+				? __dirname
+				: dirname(new URL(import.meta.url).pathname)
+	} catch {
+		extDir = "."
+	}
 
 	pi.on("resources_discover", async () => ({
 		skillPaths: [join(extDir, "skills")],
@@ -500,7 +611,7 @@ export default function (pi: ExtensionAPI) {
 				decisions: handoff.decisions,
 			})
 
-			// Force state reconstruction to include the newly appended completion entry
+			// Force state reconstruction so the dashboard picks up the completed status on the new branch
 			state = new State(ctx)
 			updateWidget(ctx, state)
 
@@ -523,6 +634,78 @@ export default function (pi: ExtensionAPI) {
 				{
 					triggerTurn: true,
 				},
+			)
+		},
+	})
+
+	// -----------------------------------------------------------------------
+	// mini_task_plan tool
+	// -----------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "mini_task_plan",
+		label: "Mini Task Plan",
+		description:
+			"Plan ahead for the mini-tasks needed for this session. Always overwrites the existing plan. " +
+			"Can be called at any point to update or refine the plan based on new findings.",
+		promptSnippet: "Plan a list of mini-tasks ahead of executing them",
+		promptGuidelines: [
+			"Plan ahead: Use this tool at the very beginning of a session or when your existing plan needs to change.",
+			"Avoid over-granularity: If multiple upcoming mini-tasks require examining the same file or resource, read/inspect that resource first in the parent context before spawning child mini-tasks. This shares context across children and avoids redundant operations.",
+			"Always list all outstanding steps in the tasks array, as each call overwrites the current plan.",
+		],
+		parameters: PlanParams,
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (!isEnabled || !state) {
+				return disabledMessage
+			}
+
+			// Persist the plan in the session
+			pi.appendEntry("mini-task-plan", {
+				tasks: params.tasks,
+			})
+
+			// Force reconstruct state to reflect new plan
+			state = new State(ctx)
+			updateWidget(ctx, state)
+
+			const lines: string[] = ["Overwrote current mini-task plan:"]
+			for (const t of params.tasks) {
+				lines.push(
+					`- [ ] ${t.id}: ${t.title}${t.description ? ` (${t.description})` : ""}`,
+				)
+			}
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: lines.join("\n"),
+					},
+				],
+				details: { tasks: params.tasks },
+			}
+		},
+
+		renderCall(args, theme) {
+			const count = args.tasks?.length ?? 0
+			return new Text(
+				theme.fg("toolTitle", theme.bold("mini_task_plan ")) +
+					theme.fg("muted", `(${count} tasks planned)`),
+				0,
+				0,
+			)
+		},
+
+		renderResult(result, _options, theme) {
+			const text = result.content[0]
+			const msg = text?.type === "text" ? text.text : ""
+			const firstLine = msg.split("\n")[0] || "Planned"
+			return new Text(
+				theme.fg("success", "\u25b6 ") + theme.fg("muted", firstLine),
+				0,
+				0,
 			)
 		},
 	})
@@ -554,16 +737,30 @@ export default function (pi: ExtensionAPI) {
 			}
 			const sm = ctx.sessionManager
 
-			// Generate unique task ID
-			const id = state.uniqueSlug(params.title)
+			// Ensure the task exists in the plan
+			const planned = state.plannedTasks.find((p) => p.id === params.id)
+			if (!planned) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error: Task ID "${params.id}" not found in the planned tasks. Use mini_task_plan to plan it first.`,
+						},
+					],
+					details: {},
+				}
+			}
+
+			// Use the planned task's id, title, and description
+			const id = params.id
 			const parentId = state.currentTask()?.id ?? null
 			const startTag = `${id}-start`
 
 			// Build task data
 			const task: MiniTaskData = {
 				id,
-				title: params.title,
-				description: params.description || "",
+				title: planned.title,
+				description: planned.description || "",
 				parentId,
 				startTag: startTag,
 				startEntryId: sm.getLeafId(),
@@ -574,6 +771,7 @@ export default function (pi: ExtensionAPI) {
 			pi.appendEntry("mini-task-start", task)
 			// Update in-memory state
 			state?.startTask(task)
+			planned.status = "wip"
 
 			const depth = state?.taskStack.length
 			const parentInfo = parentId
@@ -593,10 +791,10 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme) {
-			const title = args.title || "untitled"
+			const id = args.id || "unknown"
 			return new Text(
 				theme.fg("toolTitle", theme.bold("mini_task_start ")) +
-					theme.fg("muted", `"${title}"`),
+					theme.fg("muted", `"${id}"`),
 				0,
 				0,
 			)
@@ -634,8 +832,9 @@ export default function (pi: ExtensionAPI) {
 				return disabledMessage
 			}
 
-			const currentTask = state.handoffTask()
-			if (!currentTask) {
+			// Validate we actually have a task to handoff, and peek before we pop
+			const currentTaskPeek = state.currentTask()
+			if (!currentTaskPeek) {
 				return {
 					content: [
 						{
@@ -646,9 +845,43 @@ export default function (pi: ExtensionAPI) {
 					details: {},
 				}
 			}
+
+			if (currentTaskPeek.status === "completed") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error: The active task "${currentTaskPeek.id}" is already marked as completed. You cannot handoff a task that is already finished.`,
+						},
+					],
+					details: {},
+				}
+			}
+
+			// Safe to pop now
+			const currentTask = state.handoffTask()
+			if (!currentTask) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "No active mini-task to hand off.",
+						},
+					],
+					details: {},
+				}
+			}
 			currentTask.status = "completed"
+			const plan = state.plannedTasks.find((p) => p.id === currentTask.id)
+			if (plan) plan.status = "completed"
 
 			const currentLeaf = ctx.sessionManager.getLeafId()
+			const currentLabel = currentLeaf
+				? ctx.sessionManager.getLabel(currentLeaf)
+				: undefined
+			const origin = currentLabel
+				? `tag: ${currentLabel}`
+				: currentLeaf || "unknown"
 
 			// If already at the start, no compression needed
 			if (currentLeaf === currentTask.startEntryId) {
@@ -690,14 +923,6 @@ export default function (pi: ExtensionAPI) {
 
 			const enrichedSummary = parts.join("\n")
 
-			// Create branch with summary (compress the task's conversation range)
-			const currentLabel = currentLeaf
-				? ctx.sessionManager.getLabel(currentLeaf)
-				: undefined
-			const origin = currentLabel
-				? `tag: ${currentLabel}`
-				: currentLeaf || "unknown"
-
 			// Defer branching until agent_end so the aborted message stays on the old branch
 			currentTask.status = "completed"
 
@@ -710,6 +935,10 @@ export default function (pi: ExtensionAPI) {
 				filesChanged: params.files_changed || [],
 				decisions: params.decisions || [],
 			}
+
+			// We removed the appendEntry from here because branching from startTag
+			// would orphan it on the old branch. It is now appended in the command handler
+			// after branchWithSummary completes.
 
 			pi.sendUserMessage("/mini-task-handoff", {
 				deliverAs: "followUp",
@@ -814,6 +1043,26 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				for (const root of roots) renderTask(root, 0)
+			}
+
+			// Planned tasks
+			if (state.plannedTasks.length > 0) {
+				lines.push("")
+				lines.push("Planned tasks:")
+				for (const p of state.plannedTasks) {
+					const statusIcon =
+						p.status === "completed"
+							? "\u2713"
+							: p.status === "wip"
+								? "\u25cf"
+								: p.status === "cancelled"
+									? "\u00d7"
+									: "\u25cb"
+					lines.push(`  ${statusIcon} ${p.id}: ${p.title}`)
+					if (p.description) {
+						lines.push(`    ${p.description}`)
+					}
+				}
 			}
 
 			// Active stack

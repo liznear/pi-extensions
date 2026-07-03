@@ -7,12 +7,11 @@ This repo is also a **Pi package**, so you can install it directly via `pi insta
 ## Included extensions
 
 - `ask-question`
+- `custom-agents`
 - `custom-footer`
 - `diff`
-- `custom-agents`
-- `review`
-- `todo`
-- `tool-rendering`
+- `explain`
+- `mini-task`
 
 ## Install
 
@@ -53,7 +52,7 @@ Create symlinks from this repo into that folder:
 ```bash
 mkdir -p ~/.pi/agent/extensions
 
-for ext in ask-question custom-footer custom-agents diff review todo tool-rendering; do
+for ext in ask-question custom-agents custom-footer diff explain mini-task; do
   ln -sfn "$PWD/$ext" "$HOME/.pi/agent/extensions/$ext"
 done
 ```

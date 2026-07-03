@@ -1,6 +1,6 @@
 ---
 name: mini-task
-description: Context management via structured mini-tasks. Use mini_task_start to explicitly state your plan and begin tracked work, mini_task_handoff to compress context when done, mini_task_tree to orient. Break large tasks into mini-tasks. Experiments are mini-tasks too. Use this where there are multiple steps, one step needs to collect a lot of information to draw the final conclusion, and only the conclusion is useful for following steps.
+description: Context management via structured mini-tasks. Use mini_task_plan to lay out steps, mini_task_start to explicitly state your plan and begin tracked work, mini_task_handoff to compress context when done, mini_task_tree to orient. Break large tasks into mini-tasks. Experiments are mini-tasks too. Use this where there are multiple steps, one step needs to collect a lot of information to draw the final conclusion, and only the conclusion is useful for following steps.
 ---
 
 # Mini-Task: Structured Context Management
@@ -13,32 +13,60 @@ Your context window is limited. Mini-tasks give you **explicit control** over wh
 
 Mini-task management is enabled by default. The user can toggle it off and on using the `/mini-task` and `/mini-task off` commands.
 
-## The Three Tools
+## The Four Tools
 
 | Tool | Purpose | When |
 |------|---------|------|
+| `mini_task_plan` | Lay out the sequence of mini-tasks for the session, avoiding over-granularity | At the very start of a session or when plans change |
 | `mini_task_start` | Start a tracked task with a save point. Reminds you to explicitly state your plan. | Before beginning any focused work |
 | `mini_task_handoff` | Complete task, compress context into summary | When the task's goal is met (or abandoned) |
-| `mini_task_tree` | Show task tree and active stack | When you need to orient yourself |
+| `mini_task_tree` | Show task tree, active stack, and planned tasks | When you need to orient yourself |
 
 ## Workflow
 
-### 1. Start
+### 1. Plan
+
+Laying out a list of tasks before executing prevents ad-hoc, overly granular context switches.
+
+```javascript
+mini_task_plan({
+  tasks: [
+    {
+      id: "read-docs",
+      title: "Read system documentation",
+      description: "Understand requirements and schema structures first"
+    },
+    {
+      id: "implement-core",
+      title: "Implement core business logic",
+      description: "Build logic inside a compressed task"
+    }
+  ]
+})
+```
+
+**Granularity & Shared Context Rule:**
+Avoid running a sequence of tiny mini-tasks that each read the same resource file (e.g., config, main source files). If multiple upcoming mini-tasks depend on the same underlying information, **perform those reads in the parent context** first. This "caches" the information in the parent's memory, ensuring that all subsequent sub-tasks have access to it without incurring redundant read overhead or too-frequent hands-offs.
+
+### 2. Start
+
+`mini_task_start` must reference a task `id` from your plan. When started, the task is automatically marked as "wip" (work in progress) in the plan.
 
 ```javascript
 mini_task_start({
-  title: "Implement user authentication",
-  description: "Add JWT auth with login/logout endpoints"
+  id: "implement-core"
 })
 ```
 
 This creates a save point. Everything from here until handoff is "inside" this task.
 
-### 2. Work
+### 3. Work
 
 Execute the task normally using any tools you need.
 
-### 3. Handoff
+### 4. Handoff
+
+When the task is complete, `mini_task_handoff` automatically updates the task's status in the plan to "completed" and replaces the conversation with a summary.
 
 ```javascript
 mini_task_handoff({
@@ -50,6 +78,7 @@ mini_task_handoff({
 ```
 
 After handoff:
+
 - All conversation from task start to now is **compressed** into a summary
 - Context window is freed
 - The `next_step` becomes your immediate action
@@ -60,11 +89,11 @@ After handoff:
 Mini-tasks can be nested. The default behavior is to nest under the current active task:
 
 ```javascript
-// Start parent task
-mini_task_start({ title: "Refactor database layer" })
+// Start parent task (assuming "refactor-db" is in the plan)
+mini_task_start({ id: "refactor-db" })
 
-  // Start sub-task (auto-nested under parent)
-  mini_task_start({ title: "Design new schema" })
+  // Start sub-task (auto-nested under parent, assuming "design-schema" is in the plan)
+  mini_task_start({ id: "design-schema" })
 
   // ... work on schema ...
 
@@ -87,10 +116,11 @@ mini_task_handoff({
 
 ## Experiments as Mini-Tasks
 
-Experiments, research, and exploration consume context without producing "final" work. Always wrap them:
+Experiments, research, and exploration consume context without producing "final" work. Always plan and wrap them:
 
 ```javascript
-mini_task_start({ title: "Benchmark JSON parsers" })
+// Ensure "benchmark-parsers" is in your plan
+mini_task_start({ id: "benchmark-parsers" })
 
 // ... run benchmarks, collect data, analyze ...
 
@@ -124,11 +154,13 @@ The `summary` and `next_step` are your lifeline — the compressed context repla
 - **Next step** (specific, actionable — what should happen immediately)
 
 Good summary:
+
 ```
 "Implemented OAuth2 with PKCE flow. Google + GitHub providers working. 12 tests passing. Created auth/oauth.ts, modified routes.ts and config.ts."
 ```
 
 Bad summary:
+
 ```
 "Done with auth."
 ```
@@ -162,9 +194,11 @@ mini_task_start → try approach → fails 3 times → mini_task_handoff (with f
 ### Multi-Phase Feature
 
 ```
-mini_task_start (feature)
-  mini_task_start (phase 1) → handoff
-  mini_task_start (phase 2) → handoff
-  mini_task_start (phase 3) → handoff
+mini_task_plan (outline steps)
+mini_task_start({ id: "feature" })
+  mini_task_start({ id: "phase-1" }) → handoff
+  mini_task_start({ id: "phase-2" }) → handoff
+  mini_task_plan (discover new information, update plan)
+  mini_task_start({ id: "phase-3" }) → handoff
 mini_task_handoff (feature complete)
 ```
