@@ -88,7 +88,10 @@ class State {
 			if (entry.customType === "mini-task-plan") {
 				const data = entry.data as { tasks?: PlannedTask[] } | undefined
 				if (data?.tasks) {
-					this.plannedTasks = data.tasks.map((t) => ({ ...t }))
+					this.plannedTasks = data.tasks.map((t) => ({
+						...t,
+						status: t.status || "pending",
+					}))
 				}
 			}
 
@@ -613,6 +616,13 @@ export default function (pi: ExtensionAPI) {
 
 			// Force state reconstruction so the dashboard picks up the completed status on the new branch
 			state = new State(ctx)
+
+			// Manually enforce completed status on the state just in case session branch is cached
+			const plan = state.plannedTasks.find((p) => p.id === handoff.task.id)
+			if (plan) plan.status = "completed"
+			const task = state.allTasks.get(handoff.task.id)
+			if (task) task.status = "completed"
+
 			updateWidget(ctx, state)
 
 			ctx.ui.notify(
