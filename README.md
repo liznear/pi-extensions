@@ -12,6 +12,7 @@ This repo is also a **Pi package**, so you can install it directly via `pi insta
 - `diff`
 - `explain`
 - `mini-task`
+- `otty-integration`
 
 ## Install
 
@@ -52,7 +53,7 @@ Create symlinks from this repo into that folder:
 ```bash
 mkdir -p ~/.pi/agent/extensions
 
-for ext in ask-question custom-agents custom-footer diff explain mini-task; do
+for ext in ask-question custom-agents custom-footer diff explain mini-task otty-integration; do
   ln -sfn "$PWD/$ext" "$HOME/.pi/agent/extensions/$ext"
 done
 ```
@@ -78,7 +79,7 @@ git add .
 git commit -m "Update pi extensions"
 ```
 
-2. Pull latest where needed:
+1. Pull latest where needed:
 
 ```bash
 git pull
@@ -95,7 +96,7 @@ Then restart Pi or run `/reload`.
 ln -sfn "$PWD/my-extension" "$HOME/.pi/agent/extensions/my-extension"
 ```
 
-3. Restart Pi or run `/reload`.
+1. Restart Pi or run `/reload`.
 
 ## Uninstall an extension
 
@@ -108,6 +109,7 @@ rm ~/.pi/agent/extensions/<extension-name>
 ## Notes
 
 - `custom-footer` and `custom-agents` have their own README files with extension-specific usage.
+- `otty-integration` reports pi agent state to the Otty terminal app (see its README for the `OTTY_KIND` caveat).
 - If an extension does not appear, confirm the symlink exists:
 
 ```bash
