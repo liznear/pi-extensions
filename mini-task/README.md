@@ -87,17 +87,10 @@ LLM: mini_task_handoff({
 ### Nesting
 
 Child tasks compress independently. When a child hands off:
+
 - The child's conversation is replaced by its summary
 - The parent task resumes with the child's summary in context
 - The parent's start point remains untouched
-
-## Companion Skill
-
-The extension auto-discovers its companion skill (`mini-task`) which teaches the LLM:
-- When to create mini-tasks
-- How to structure handoff messages
-- Nesting patterns
-- Using experiments as mini-tasks
 
 ## License
 

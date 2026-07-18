@@ -17,7 +17,6 @@
  *   this requires a patch on Pi to set expandPromptTemplates as true in sendUserMessage.
  */
 
-import { dirname, join } from "node:path"
 import type {
 	AgentToolResult,
 	ExtensionAPI,
@@ -199,7 +198,7 @@ class State {
 	}
 }
 
-// Enable by default once expandPromptTemplates is supported in sendUserMessage.
+// Enabled by default. Users can toggle with `/mini-task` and `/mini-task off`.
 let isEnabled = true
 // let commandCtx: ExtensionCommandContext | undefined
 let state: State | undefined
@@ -493,21 +492,6 @@ const TreeParams = Type.Object({})
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-	// Discover companion skill
-	let extDir = ""
-	try {
-		extDir =
-			typeof __dirname !== "undefined"
-				? __dirname
-				: dirname(new URL(import.meta.url).pathname)
-	} catch {
-		extDir = "."
-	}
-
-	pi.on("resources_discover", async () => ({
-		skillPaths: [join(extDir, "skills")],
-	}))
-
 	// Reconstruct state on session events
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		isEnabled = true
@@ -657,10 +641,13 @@ export default function (pi: ExtensionAPI) {
 		label: "Mini Task Plan",
 		description:
 			"Plan ahead for the mini-tasks needed for this session. Always overwrites the existing plan. " +
-			"Can be called at any point to update or refine the plan based on new findings.",
+			"Can be called at any point to update or refine the plan based on new findings. " +
+			"Required before mini_task_start: a task cannot be started unless its id is in the plan.",
 		promptSnippet: "Plan a list of mini-tasks ahead of executing them",
 		promptGuidelines: [
-			"Plan ahead: Use this tool at the very beginning of a session or when your existing plan needs to change.",
+			"Plan ahead: Use this tool at the very beginning of a session or whenever the plan needs to change.",
+			"Required before start: mini_task_start rejects any task id not present in the plan, so always plan first.",
+			"Include research/exploration/spike steps as their own tasks, not just implementation steps. Any step that gathers information to reach a conclusion — reading docs, benchmarking, investigating a library, debugging an unknown — should be a separate mini-task; at handoff only the conclusion is kept and the rest of the context is freed.",
 			"Avoid over-granularity: If multiple upcoming mini-tasks require examining the same file or resource, read/inspect that resource first in the parent context before spawning child mini-tasks. This shares context across children and avoids redundant operations.",
 			"Always list all outstanding steps in the tasks array, as each call overwrites the current plan.",
 		],
@@ -728,14 +715,15 @@ export default function (pi: ExtensionAPI) {
 		name: "mini_task_start",
 		label: "Mini Task Start",
 		description:
-			"Start a new tracked mini-task. Creates a save point in the conversation tree. " +
-			"Use before any focused work to explicitly state your plan and what you are going to do. " +
-			"When the task completes, call mini_task_handoff to compress the work into a summary and free context.",
+			"Start a new tracked mini-task and create a save point in the conversation tree. " +
+			"Use before ANY focused work — implementation, debugging, research, or exploration — to explicitly state your plan. " +
+			"When the task completes, call mini_task_handoff to compress the work into a summary and free context. " +
+			"The task id must already exist in the plan from a prior mini_task_plan call.",
 		promptSnippet: "Explicitly state your plan and start a tracked mini-task",
 		promptGuidelines: [
-			"Use mini_task_start before any focused piece of work. It acts as a reminder for you to explicitly state what your plan is and what you are going to do.",
+			"Plan first: the task id must already be in the plan from a prior mini_task_plan call; starting an unplanned task is rejected.",
+			"Use mini_task_start before ANY focused work — implementation, debugging, research, or exploration. Wrapping a research/spike here compresses the whole investigation down to its conclusion at handoff, behaving like a sub-agent.",
 			"Break large tasks into mini-tasks proactively. Each mini-task should have a clear, achievable goal.",
-			"Experiments and exploration are also mini-tasks. After the experiment, use mini_task_handoff to summarize findings and free context.",
 			"Mini-tasks can be nested for finer-grained control. A sub-task's handoff returns to the parent task.",
 			"Always call mini_task_start BEFORE starting the actual work, not after.",
 		],

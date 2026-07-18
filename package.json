@@ -18,9 +18,6 @@
 			"explain/index.ts",
 			"mini-task/index.ts",
 			"otty-integration/index.ts"
-		],
-		"skills": [
-			"mini-task/skills/mini-task"
 		]
 	},
 	"scripts": {
