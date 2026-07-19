@@ -12,6 +12,7 @@ This repo is also a **Pi package**, so you can install it directly via `pi insta
 - `diff`
 - `explain`
 - `mini-task`
+- `command-run`
 - `otty-integration`
 
 ## Install
@@ -53,7 +54,7 @@ Create symlinks from this repo into that folder:
 ```bash
 mkdir -p ~/.pi/agent/extensions
 
-for ext in ask-question custom-agents custom-footer diff explain mini-task otty-integration; do
+for ext in ask-question custom-agents custom-footer diff explain mini-task command-run otty-integration; do
   ln -sfn "$PWD/$ext" "$HOME/.pi/agent/extensions/$ext"
 done
 ```

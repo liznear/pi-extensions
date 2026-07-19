@@ -2,7 +2,7 @@
 	"name": "pi-extensions-nearsyh",
 	"version": "0.1.0",
 	"private": false,
-	"description": "Pi extension bundle: ask-question, custom-footer, custom-agents, diff, explain, mini-task, otty-integration",
+	"description": "Pi extension bundle: ask-question, custom-footer, custom-agents, diff, explain, mini-task, command-run, otty-integration",
 	"license": "MIT",
 	"keywords": [
 		"pi-package",
@@ -17,6 +17,7 @@
 			"custom-agents/index.ts",
 			"explain/index.ts",
 			"mini-task/index.ts",
+			"command-run/index.ts",
 			"otty-integration/index.ts"
 		]
 	},
