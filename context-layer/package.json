@@ -1,0 +1,13 @@
+{
+	"name": "pi-context-layer",
+	"version": "1.0.0",
+	"description": "Progressive context layer for pi agents",
+	"pi": {
+		"extensions": [
+			"extension.ts"
+		],
+		"skills": [
+			"skills/context-layer"
+		]
+	}
+}
