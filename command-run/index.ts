@@ -95,6 +95,7 @@ interface ToolExecResult {
 interface SubResult {
 	index: number
 	commandType: string
+	detail?: string
 	step: number
 	status: "ok" | "error"
 	output: string
@@ -114,6 +115,7 @@ interface CommandRunDetails {
 	commands?: Array<{
 		index: number
 		commandType: string
+		detail?: string
 		step: number
 		status: "ok" | "error"
 		error?: string
@@ -165,6 +167,39 @@ function normalizeStep(step: unknown): number {
 		: 1
 }
 
+function formatCommandDetail(
+	commandType: string,
+	params: Record<string, unknown>,
+): string {
+	let detail = ""
+	if (commandType === "bash" && typeof params.command === "string") {
+		detail = params.command
+	} else if (
+		["read", "write", "edit", "ls"].includes(commandType) &&
+		typeof params.path === "string"
+	) {
+		detail = params.path
+	} else if (commandType === "grep" && typeof params.pattern === "string") {
+		detail = params.pattern
+		if (typeof params.path === "string") {
+			detail += ` ${params.path}`
+		}
+	} else if (commandType === "find") {
+		const parts = []
+		if (typeof params.path === "string") parts.push(params.path)
+		if (typeof params.pattern === "string")
+			parts.push(`-name ${params.pattern}`)
+		detail = parts.join(" ")
+	}
+	if (detail) {
+		detail = detail.replace(/\r?\n/g, " ").trim()
+		if (detail.length > 50) {
+			detail = `${detail.substring(0, 47)}...`
+		}
+	}
+	return detail
+}
+
 interface CommandJob {
 	commandType: string
 	parameters: Record<string, unknown>
@@ -179,7 +214,8 @@ async function runCommand(
 ): Promise<SubResult> {
 	const { commandType, parameters, step, index } = job
 	const tool = dispatch[commandType]
-	const base = { index, commandType, step }
+	const detail = formatCommandDetail(commandType, parameters)
+	const base = { index, commandType, detail, step }
 
 	if (!tool) {
 		return {
@@ -269,7 +305,10 @@ function buildFinalResult(
 			lines.push(`\u2500\u2500 step ${result.step} \u2500\u2500`)
 		}
 		const mark = result.status === "ok" ? "\u2713" : "\u2717"
-		lines.push(`[${mark}] #${result.index + 1} ${result.commandType}`)
+		const title = result.detail
+			? `${result.commandType} ${result.detail}`
+			: result.commandType
+		lines.push(`[${mark}] #${result.index + 1} ${title}`)
 		if (result.status === "error") {
 			lines.push(`Error: ${result.error}`)
 		} else if (result.output) {
@@ -310,6 +349,7 @@ function buildFinalResult(
 			commands: results.map((result) => ({
 				index: result.index,
 				commandType: result.commandType,
+				detail: result.detail,
 				step: result.step,
 				status: result.status,
 				error: result.error,
@@ -407,23 +447,40 @@ export default function commandRunExtension(pi: ExtensionAPI): void {
 			const text =
 				(context.lastComponent as Text | undefined) ?? new Text("", 0, 0)
 
-			const byStep = new Map<number, string[]>()
-			args.commands.forEach((command, index) => {
-				const step = normalizeStep(command.step)
-				const bucket = byStep.get(step) ?? []
-				bucket.push(`#${index + 1} ${command.command_type}`)
-				byStep.set(step, bucket)
-			})
-
 			const lines = [
 				`${theme.fg("toolTitle", theme.bold("command_run "))}${theme.fg(
 					"muted",
 					`${args.commands.length} command(s)`,
 				)}`,
 			]
+
+			const byStep = new Map<
+				number,
+				{ index: number; command: (typeof args.commands)[0] }[]
+			>()
+			args.commands.forEach((command, index) => {
+				const step = normalizeStep(command.step)
+				const bucket = byStep.get(step) ?? []
+				bucket.push({ index, command })
+				byStep.set(step, bucket)
+			})
+
 			for (const step of [...byStep.keys()].sort((a, b) => a - b)) {
-				const items = byStep.get(step)?.join(", ") ?? ""
-				lines.push(`${theme.fg("dim", `  step ${step}: `)}${items}`)
+				const bucket = byStep.get(step) ?? []
+				if (byStep.size > 1) {
+					lines.push(`${theme.fg("dim", `  step ${step}:`)}`)
+				}
+				for (const { index, command } of bucket) {
+					const detail = formatCommandDetail(
+						command.command_type,
+						command.parameters || {},
+					)
+					const prefix = byStep.size > 1 ? "    " : "  "
+					const formattedDetail = detail ? ` ${theme.fg("muted", detail)}` : ""
+					lines.push(
+						`${prefix}${theme.fg("dim", `#${index + 1}`)} ${theme.fg("toolTitle", command.command_type)}${formattedDetail}`,
+					)
+				}
 			}
 
 			text.setText(lines.join("\n"))
@@ -455,11 +512,14 @@ export default function commandRunExtension(pi: ExtensionAPI): void {
 				for (const command of details.commands) {
 					const mark = command.status === "ok" ? "\u2713" : "\u2717"
 					const color = command.status === "ok" ? "success" : "error"
+					const formattedDetail = command.detail
+						? ` ${theme.fg("muted", command.detail)}`
+						: ""
 					lines.push(
 						theme.fg(
 							color,
 							`  ${mark} #${command.index + 1} ${command.commandType}`,
-						),
+						) + formattedDetail,
 					)
 					if (command.error) {
 						lines.push(theme.fg("dim", `      ${command.error}`))
