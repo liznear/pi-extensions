@@ -21,6 +21,7 @@ import {
 	matchesKey,
 	Text,
 	truncateToWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 
@@ -69,7 +70,10 @@ interface AskQuestionsDetails {
 const OptionSchema = Type.Object({
 	label: Type.String({ description: "Display label for the option" }),
 	description: Type.Optional(
-		Type.String({ description: "Optional description shown below label" }),
+		Type.String({
+			description:
+				"Optional description shown below label. Be precise: at most 3 sentences.",
+		}),
 	),
 })
 
@@ -99,6 +103,23 @@ const QuestionSchema = Type.Object({
 const AskQuestionsParams = Type.Object({
 	questions: Type.Array(QuestionSchema, { description: "Questions to ask" }),
 })
+
+// ============================================================
+// Helpers
+// ============================================================
+
+/** Wrap a styled description across multiple terminal lines, indenting each. */
+function pushDescription(
+	add: (s: string) => void,
+	styledText: string,
+	indent: string,
+	width: number,
+) {
+	const contentWidth = Math.max(1, width - indent.length)
+	for (const line of wrapTextWithAnsi(styledText, contentWidth)) {
+		add(`${indent}${line}`)
+	}
+}
 
 // ============================================================
 // Helper: Single Question UI
@@ -215,7 +236,12 @@ async function askSingleQuestion(
 				}
 
 				if (opt.description) {
-					add(`     ${theme.fg("muted", opt.description)}`)
+					pushDescription(
+						add,
+						theme.fg("muted", opt.description),
+						"     ",
+						width,
+					)
 				}
 			}
 
@@ -459,7 +485,12 @@ async function askMultipleQuestions(
 							)
 						}
 						if (opt.description) {
-							add(`     ${theme.fg("muted", opt.description)}`)
+							pushDescription(
+								add,
+								theme.fg("muted", opt.description),
+								"     ",
+								width,
+							)
 						}
 					}
 					lines.push("")
@@ -506,7 +537,12 @@ async function askMultipleQuestions(
 								),
 						)
 						if (opt.description) {
-							add(`     ${theme.fg("muted", opt.description)}`)
+							pushDescription(
+								add,
+								theme.fg("muted", opt.description),
+								"     ",
+								width,
+							)
 						}
 					}
 				}
