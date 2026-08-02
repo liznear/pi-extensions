@@ -16,6 +16,9 @@ your normal agent workflow is never blocked.
   `/reload`).
 - Skips sessions that already have a name (e.g. resumed/`--name` sessions).
 - Uses a configurable model (see below). Falls back to the active session model.
+- Mirrors the session name to the **terminal tab title**, so it shows up in the
+  host terminal's tab bar — including Orca's embedded terminal, iTerm2, Ghostty,
+  WezTerm, etc. (via the standard OSC title sequence; no Orca-specific code).
 
 ## Configuration
 
@@ -46,11 +49,11 @@ Project-local config overrides global config.
 
 ## Commands
 
-| Command         | Description                                                            |
-| --------------- | ---------------------------------------------------------------------- |
-| `/title`        | Set a custom title (`/title <text>`), or regenerate from first message. |
-| `/title-model`  | Pick the model used for title generation (persisted to global config). |
-| `/title-config` | Show the resolved configuration.                                       |
+| Command         | Description                                                                |
+| --------------- | -------------------------------------------------------------------------- |
+| `/title`        | Set a custom title (`/title <text>`), or regenerate from first message.    |
+| `/title-model`  | Pick the model used for title generation (persisted to global config).     |
+| `/title-config` | Show the resolved configuration.                                           |
 
 `/title-model` lists only models with auth configured
 (`ctx.modelRegistry.getAvailable()`).

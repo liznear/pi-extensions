@@ -24,7 +24,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { complete } from "@earendil-works/pi-ai"
 import type {
 	ExtensionAPI,
@@ -310,13 +310,52 @@ function runTitleGeneration(
 // Extension
 // ---------------------------------------------------------------------------
 
+// Terminal tab/window title shown by the host terminal emulator (Orca's
+// embedded terminal, iTerm2, Ghostty, WezTerm, ...). Mirrors the pi session
+// name so the tab bar reflects the current session at a glance.
+function formatTerminalTitle(name: string | undefined, cwd: string): string {
+	const folder = basename(cwd)
+	return name ? `π - ${name} - ${folder}` : `π - ${folder}`
+}
+
+/**
+ * `session_info_changed` is emitted by the runtime whenever the session display
+ * name changes (/name, /title, auto-title, RPC, ...). It exists in the running
+ * 0.83.0 runtime but is missing from the installed 0.74.0 dev type union (it
+ * was added to the public union in 0.83.0), so it is typed locally and `pi.on`
+ * is cast narrowly at the call site to bridge the version skew.
+ */
+type SessionInfoChangedEvent = {
+	type: "session_info_changed"
+	name: string | undefined
+}
+
 export default function (pi: ExtensionAPI) {
 	// In-memory guard so we only auto-title once per session instance. Reset on
 	// any (re)start of the session runtime.
 	let hasTitledThisSession = false
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		hasTitledThisSession = false
+		// Restore the terminal tab title immediately for resumed/named sessions.
+		if (ctx.hasUI) {
+			ctx.ui.setTitle(formatTerminalTitle(pi.getSessionName(), ctx.cwd))
+		}
+	})
+
+	// Mirror the session name to the terminal tab title. This is the single
+	// source of truth: /name, /title, auto-title, and RPC all funnel through
+	// session_info_changed, so the host terminal (incl. Orca) stays in sync
+	// without coupling to each call site. Typed via a narrow cast (see
+	// SessionInfoChangedEvent above) due to dev-type version skew.
+	const onSessionInfoChanged = pi.on as unknown as (
+		event: "session_info_changed",
+		handler: (e: SessionInfoChangedEvent, ctx: ExtensionContext) => void,
+	) => void
+	onSessionInfoChanged("session_info_changed", (event, ctx) => {
+		if (ctx.hasUI) {
+			ctx.ui.setTitle(formatTerminalTitle(event.name, ctx.cwd))
+		}
 	})
 
 	// Auto-title after the first prompt. Runs entirely in the background: the
