@@ -2,7 +2,7 @@
 	"name": "pi-extensions-nearsyh",
 	"version": "0.1.0",
 	"private": false,
-	"description": "Pi extension bundle: ask-question, custom-footer, custom-agents, diff, explain, mini-task, command-run, otty-integration",
+	"description": "Pi extension bundle: ask-question, auto-title, custom-footer, custom-agents, diff, explain, mini-task, command-run, otty-integration",
 	"license": "MIT",
 	"keywords": [
 		"pi-package",
@@ -12,6 +12,7 @@
 	"pi": {
 		"extensions": [
 			"ask-question/index.ts",
+			"auto-title/index.ts",
 			"custom-footer/index.ts",
 			"diff/index.ts",
 			"custom-agents/index.ts",
@@ -22,7 +23,8 @@
 		]
 	},
 	"scripts": {
-		"lint": "bunx --bun @biomejs/biome check --write"
+		"lint": "bunx --bun @biomejs/biome check --write",
+		"start": "bun run server.ts"
 	},
 	"dependencies": {
 		"@pierre/diffs": "^1.2.10"

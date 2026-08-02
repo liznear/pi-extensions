@@ -429,7 +429,13 @@ function applyCustomFooter(
 
 				const folder = basename(ctx.cwd)
 				const branch = footerData.getGitBranch() ?? "-"
-				const right = theme.fg("dim", `${folder} @ ${branch}`)
+				const title = ctx.sessionManager.getSessionName()
+				const rightParts: string[] = []
+				if (title) {
+					rightParts.push(theme.fg("accent", title))
+				}
+				rightParts.push(theme.fg("dim", `${folder} @ ${branch}`))
+				const right = rightParts.join(theme.fg("dim", " · "))
 
 				const left = ` ${sections.join(" | ")}`
 				const pad = Math.max(

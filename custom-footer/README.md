@@ -9,6 +9,7 @@ By rendering via `ctx.ui.setFooter(...)`, the line is managed as the footer, not
 
 ## What it shows
 
+- Session title (from `pi.setSessionName()` / `/name` / auto-title extension), shown on the right in the accent color when set
 - Token usage summary (`input`, `output`, `cost`) from assistant messages in current branch
 - Aggregated extension status texts (`ctx.ui.setStatus(...)` entries)
 - Current model id
