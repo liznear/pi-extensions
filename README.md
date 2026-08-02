@@ -8,6 +8,7 @@ This repo is also a **Pi package**, so you can install it directly via `pi insta
 
 - `ask-question`
 - `auto-title`
+- `bash-timeout`
 - `custom-agents`
 - `custom-footer`
 - `diff`
@@ -55,7 +56,7 @@ Create symlinks from this repo into that folder:
 ```bash
 mkdir -p ~/.pi/agent/extensions
 
-for ext in ask-question auto-title custom-agents custom-footer diff explain mini-task command-run otty-integration; do
+for ext in ask-question auto-title bash-timeout custom-agents custom-footer diff explain mini-task command-run otty-integration; do
   ln -sfn "$PWD/$ext" "$HOME/.pi/agent/extensions/$ext"
 done
 ```
@@ -112,6 +113,7 @@ rm ~/.pi/agent/extensions/<extension-name>
 
 - `custom-footer` and `custom-agents` have their own README files with extension-specific usage.
 - `auto-title` automatically sets a session title after the first prompt (see its README for model configuration).
+- `bash-timeout` enforces a default timeout (60s, configurable via `PI_BASH_TIMEOUT_SECONDS`) on `bash` calls that omit one.
 - `otty-integration` reports pi agent state to the Otty terminal app (see its README for the `OTTY_KIND` caveat).
 - If an extension does not appear, confirm the symlink exists:
 
