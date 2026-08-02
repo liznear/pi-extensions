@@ -46,11 +46,11 @@ Project-local config overrides global config.
 
 ## Commands
 
-| Command        | Description                                                            |
-| -------------- | ---------------------------------------------------------------------- |
-| `/title`       | Regenerate the title now from the first user message.                  |
-| `/title-model` | Pick the model used for title generation (persisted to global config). |
-| `/title-config`| Show the resolved configuration.                                       |
+| Command         | Description                                                            |
+| --------------- | ---------------------------------------------------------------------- |
+| `/title`        | Set a custom title (`/title <text>`), or regenerate from first message. |
+| `/title-model`  | Pick the model used for title generation (persisted to global config). |
+| `/title-config` | Show the resolved configuration.                                       |
 
 `/title-model` lists only models with auth configured
 (`ctx.modelRegistry.getAvailable()`).

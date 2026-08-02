@@ -346,10 +346,20 @@ export default function (pi: ExtensionAPI) {
 		})
 	})
 
-	// /title — regenerate the title now from the first user message.
+	// /title [custom title] — set a title manually, or regenerate from the
+	// first user message when no argument is given.
 	pi.registerCommand("title", {
-		description: "Regenerate the session title from the first user message",
-		handler: async (_args, ctx) => {
+		description:
+			"Set a custom title, or regenerate it from the first user message",
+		handler: async (args, ctx) => {
+			const custom = args?.trim()
+			if (custom) {
+				hasTitledThisSession = true
+				pi.setSessionName(custom)
+				ctx.ui.notify(`Title set: ${custom}`, "info")
+				return
+			}
+
 			const prompt = firstUserPrompt(ctx)
 			if (!prompt) {
 				ctx.ui.notify("No user message found to title from", "warning")
@@ -363,6 +373,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus(EXT_NAME, undefined)
 
 			if (title) {
+				hasTitledThisSession = true
 				pi.setSessionName(title)
 				ctx.ui.notify(`Title set: ${title}`, "info")
 			}
