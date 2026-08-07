@@ -124,25 +124,22 @@ export default function (pi: ExtensionAPI) {
 					await orch.abortMission(missionId)
 					await ctx.ui.notify(`Aborted mission ${missionId}`, "info")
 				}
-			} else if (cmd === "focus" || cmd === "attach") {
-				// /cc focus <missionId> [roleName] [workItemId]
-				// or /cc attach <missionId>
+			} else if (cmd === "attach") {
+				// /cc attach <missionId> [workItemId]
+				// Attaches to the mission lead; with a work item id, the item's owner.
 				const missionId = argsList[1]
-				let roleName = (argsList[2] as RoleName) ?? "mission_lead"
-				const workItemId = argsList[3] ? parseInt(argsList[3], 10) : undefined
+				const workItemId = argsList[2] ? parseInt(argsList[2], 10) : undefined
 
 				if (!missionId) {
 					await ctx.ui.notify(
-						"Usage: /cc focus <missionId> [roleName] [workItemId]",
+						"Usage: /cc attach <missionId> [workItemId]",
 						"error",
 					)
 					return
 				}
 
-				if (cmd === "attach") {
-					// attach is an alias to focus lead
-					roleName = "mission_lead"
-				}
+				const roleName: RoleName =
+					workItemId !== undefined ? "work_item_owner" : "mission_lead"
 
 				const session = orch.getActiveSession(missionId, roleName, workItemId)
 

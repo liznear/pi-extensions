@@ -24,7 +24,7 @@ interface Subcommand {
 	usage: string
 }
 
-/** The nine `/cc` subcommands, in the order they appear in cc.ts's handler. */
+/** The eight `/cc` subcommands, in the order they appear in cc.ts's handler. */
 const SUBCOMMANDS: readonly Subcommand[] = [
 	{ name: "list", usage: "List missions" },
 	{ name: "start", usage: "Start a mission: /cc start <description>" },
@@ -33,13 +33,8 @@ const SUBCOMMANDS: readonly Subcommand[] = [
 		usage: "Abort a mission or work item: /cc abort <missionId> [workItemId]",
 	},
 	{
-		name: "focus",
-		usage:
-			"Focus a mission session: /cc focus <missionId> [roleName] [workItemId]",
-	},
-	{
 		name: "attach",
-		usage: "Attach to the mission lead: /cc attach <missionId>",
+		usage: "Attach to a mission session: /cc attach <missionId> [workItemId]",
 	},
 	{ name: "resume", usage: "Resume a mission: /cc resume <missionId>" },
 	{

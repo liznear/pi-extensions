@@ -49,7 +49,6 @@ describe("ccCompletionForCursor — subcommand position", () => {
 			"list",
 			"start",
 			"abort",
-			"focus",
 			"attach",
 			"resume",
 			"reply",
@@ -70,7 +69,8 @@ describe("ccCompletionForCursor — subcommand position", () => {
 			{
 				value: "attach",
 				label: "attach",
-				description: "Attach to the mission lead: /cc attach <missionId>",
+				description:
+					"Attach to a mission session: /cc attach <missionId> [workItemId]",
 			},
 		])
 	})
@@ -101,7 +101,6 @@ describe("ccCompletionForCursor — mission id position", () => {
 		for (const sub of [
 			"abort",
 			"attach",
-			"focus",
 			"resume",
 			"reply",
 			"accept",
@@ -132,7 +131,7 @@ describe("ccCompletionForCursor — mission id position", () => {
 
 	test("filters by title substring case-insensitively", () => {
 		// "pi" matches mission-2's title substring (not its id prefix).
-		const c = ccCompletionForCursor("/cc focus PI", MISSIONS)
+		const c = ccCompletionForCursor("/cc attach PI", MISSIONS)
 		expect(c?.items.map((i) => i.value)).toEqual(["mission-2"])
 	})
 

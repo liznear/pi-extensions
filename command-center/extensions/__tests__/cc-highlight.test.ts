@@ -50,8 +50,8 @@ describe("highlightCcLine — /cc command lines", () => {
 	})
 
 	test("preserves editor padding before the command", () => {
-		expect(highlightCcLine("  /cc focus mission-1", fg)).toBe(
-			"  <syntaxKeyword>/cc</syntaxKeyword> <syntaxFunction>focus</syntaxFunction> <syntaxString>mission-1</syntaxString>",
+		expect(highlightCcLine("  /cc attach mission-1", fg)).toBe(
+			"  <syntaxKeyword>/cc</syntaxKeyword> <syntaxFunction>attach</syntaxFunction> <syntaxString>mission-1</syntaxString>",
 		)
 	})
 })

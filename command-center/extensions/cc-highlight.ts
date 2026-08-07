@@ -13,7 +13,7 @@ import {
 //
 // Theme mapping (see themes.md → Syntax Highlighting):
 //   /cc           → syntaxKeyword   (the command prefix)
-//   <subcommand>  → syntaxFunction  (attach, list, focus, …)
+//   <subcommand>  → syntaxFunction  (attach, list, abort, …)
 //   <missionId>   → syntaxString    (mission-id subcommands only)
 // Everything else (free-form args, non-/cc lines) passes through unchanged.
 //
@@ -26,7 +26,6 @@ import {
 /** Subcommands whose second token is a mission id (mirrors cc-completions.ts). */
 const MISSION_ID_SUBCOMMANDS: ReadonlySet<string> = new Set([
 	"abort",
-	"focus",
 	"attach",
 	"resume",
 	"reply",
