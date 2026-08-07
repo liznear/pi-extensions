@@ -16,6 +16,7 @@ This repo is also a **Pi package**, so you can install it directly via `pi insta
 - `mini-task`
 - `command-run`
 - `otty-integration`
+- `command-center`
 
 ## Install
 
@@ -56,7 +57,7 @@ Create symlinks from this repo into that folder:
 ```bash
 mkdir -p ~/.pi/agent/extensions
 
-for ext in ask-question auto-title bash-timeout custom-agents custom-footer diff explain mini-task command-run otty-integration; do
+for ext in ask-question auto-title bash-timeout custom-agents custom-footer diff explain mini-task command-run otty-integration command-center; do
   ln -sfn "$PWD/$ext" "$HOME/.pi/agent/extensions/$ext"
 done
 ```
@@ -115,6 +116,7 @@ rm ~/.pi/agent/extensions/<extension-name>
 - `auto-title` automatically sets a session title after the first prompt (see its README for model configuration).
 - `bash-timeout` enforces a default timeout (60s, configurable via `PI_BASH_TIMEOUT_SECONDS`) on `bash` calls that omit one.
 - `otty-integration` reports pi agent state to the Otty terminal app (see its README for the `OTTY_KIND` caveat).
+- `command-center` registers the `/cc` command (mission control for coordinated agent work) plus `/cc` syntax highlighting (its `extensions/cc-highlight.ts` is registered separately in the package manifest).
 - If an extension does not appear, confirm the symlink exists:
 
 ```bash
