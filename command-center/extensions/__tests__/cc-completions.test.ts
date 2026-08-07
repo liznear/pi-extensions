@@ -49,6 +49,7 @@ describe("ccCompletionForCursor — subcommand position", () => {
 			"list",
 			"start",
 			"abort",
+			"delete",
 			"attach",
 			"resume",
 			"reply",
@@ -100,6 +101,7 @@ describe("ccCompletionForCursor — mission id position", () => {
 	test("every mission-id subcommand completes mission ids", () => {
 		for (const sub of [
 			"abort",
+			"delete",
 			"attach",
 			"resume",
 			"reply",

@@ -26,6 +26,7 @@ import {
 /** Subcommands whose second token is a mission id (mirrors cc-completions.ts). */
 const MISSION_ID_SUBCOMMANDS: ReadonlySet<string> = new Set([
 	"abort",
+	"delete",
 	"attach",
 	"resume",
 	"reply",

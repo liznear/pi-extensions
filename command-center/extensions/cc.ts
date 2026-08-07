@@ -29,7 +29,8 @@ export default function (pi: ExtensionAPI) {
 				} else if (
 					e.type === "mission-status-changed" ||
 					e.type === "work-item-status-changed" ||
-					e.type === "mission-defined"
+					e.type === "mission-defined" ||
+					e.type === "mission-deleted"
 				) {
 					ctx.ui.notify(
 						`[Command Center] ${e.type} (Mission ${e.missionId})`,
@@ -124,6 +125,16 @@ export default function (pi: ExtensionAPI) {
 					await orch.abortMission(missionId)
 					await ctx.ui.notify(`Aborted mission ${missionId}`, "info")
 				}
+			} else if (cmd === "delete") {
+				// /cc delete <missionId>
+				// Removes ~/.command-center state, worktrees and git branches.
+				const missionId = argsList[1]
+				if (!missionId) {
+					await ctx.ui.notify("Usage: /cc delete <missionId>", "error")
+					return
+				}
+				await orch.deleteMission(missionId)
+				await ctx.ui.notify(`Deleted mission ${missionId}`, "info")
 			} else if (cmd === "attach") {
 				// /cc attach <missionId> [workItemId]
 				// Attaches to the mission lead; with a work item id, the item's owner.

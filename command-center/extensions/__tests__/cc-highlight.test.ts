@@ -31,6 +31,12 @@ describe("highlightCcLine — /cc command lines", () => {
 		)
 	})
 
+	test("delete colors the mission id", () => {
+		expect(highlightCcLine("/cc delete mission-1", fg)).toBe(
+			"<syntaxKeyword>/cc</syntaxKeyword> <syntaxFunction>delete</syntaxFunction> <syntaxString>mission-1</syntaxString>",
+		)
+	})
+
 	test("start/list do not color a second token (free-form argument)", () => {
 		expect(highlightCcLine("/cc start add a test", fg)).toBe(
 			"<syntaxKeyword>/cc</syntaxKeyword> <syntaxFunction>start</syntaxFunction> add a test",
