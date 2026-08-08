@@ -64,16 +64,7 @@ type AssistantTokenMessage = TokenMessage & {
 const PROGRESS_BAR_WIDTH = 20
 const TOKEN_CHARS_PER_TOKEN = 4
 const ANSI_RESET = "\x1b[0m"
-const ANSI_BLACK = "\x1b[30m"
-const ANSI_WHITE = "\x1b[97m"
 const ANSI_LIGHT_YELLOW = "\x1b[93m"
-const TOKEN_CATEGORY_STYLES: Record<TokenCategory, string> = {
-	system: `\x1b[42m${ANSI_WHITE}`,
-	user: `\x1b[102m${ANSI_BLACK}`,
-	assistantThinking: `\x1b[101m${ANSI_BLACK}`,
-	assistantMessage: `\x1b[48;5;214m${ANSI_BLACK}`,
-	tool: `\x1b[43m${ANSI_BLACK}`,
-}
 
 function estimateTokensFromChars(chars: number): number {
 	return Math.ceil(chars / TOKEN_CHARS_PER_TOKEN)
@@ -285,10 +276,18 @@ function ansi(color: string, text: string): string {
 	return `${color}${text}${ANSI_RESET}`
 }
 
+function contextUsageBarStyle(
+	percent: number | null,
+): "success" | "warning" | "error" {
+	if (percent === null || percent <= 30) return "success"
+	return percent > 50 ? "error" : "warning"
+}
+
 function renderTokenProgressBar(
 	segments: TokenSegment[],
 	totalTokens: number,
 	usedTokens: number | null,
+	fill: (text: string) => string,
 ): string {
 	const emptyBar = ansi(ANSI_LIGHT_YELLOW, "░".repeat(PROGRESS_BAR_WIDTH))
 	if (totalTokens <= 0) return emptyBar
@@ -306,66 +305,9 @@ function renderTokenProgressBar(
 	)
 	if (filledWidth <= 0) return emptyBar
 
-	const categoryOrder: TokenCategory[] = [
-		"system",
-		"user",
-		"assistantThinking",
-		"assistantMessage",
-		"tool",
-	]
-	const categoryTokens = new Map<TokenCategory, number>()
-	for (const segment of segments) {
-		if (segment.tokens > 0) {
-			categoryTokens.set(
-				segment.category,
-				(categoryTokens.get(segment.category) ?? 0) + segment.tokens,
-			)
-		}
-	}
-
-	const weightedSegments = categoryOrder
-		.map((category, index) => ({
-			category,
-			index,
-			tokens: categoryTokens.get(category) ?? 0,
-		}))
-		.filter((segment) => segment.tokens > 0)
-	if (weightedSegments.length === 0) return emptyBar
-
-	const visibleSegments = weightedSegments
-		.sort((a, b) => b.tokens - a.tokens)
-		.slice(0, filledWidth)
-		.sort((a, b) => a.index - b.index)
-	const visibleTokens = visibleSegments.reduce(
-		(sum, segment) => sum + segment.tokens,
-		0,
-	)
-	const cells = new Array<number>(visibleSegments.length).fill(1)
-	const remainingWidth = filledWidth - cells.length
-	const remainders = visibleSegments.map((segment, index) => {
-		const exact = (segment.tokens / visibleTokens) * remainingWidth
-		const extraCells = Math.floor(exact)
-		cells[index] += extraCells
-		return { index, remainder: exact - extraCells }
-	})
-
-	let assigned = cells.reduce((sum, cell) => sum + cell, 0)
-	for (const { index } of remainders.sort(
-		(a, b) => b.remainder - a.remainder,
-	)) {
-		if (assigned >= filledWidth) break
-		cells[index]++
-		assigned++
-	}
-
-	let bar = ""
-	for (let i = 0; i < visibleSegments.length; i++) {
-		const category = visibleSegments[i].category
-		bar += ansi(TOKEN_CATEGORY_STYLES[category], " ".repeat(cells[i]))
-	}
-
 	return (
-		bar + ansi(ANSI_LIGHT_YELLOW, "░".repeat(PROGRESS_BAR_WIDTH - filledWidth))
+		fill("█".repeat(filledWidth)) +
+		ansi(ANSI_LIGHT_YELLOW, "░".repeat(PROGRESS_BAR_WIDTH - filledWidth))
 	)
 }
 
@@ -410,6 +352,7 @@ function applyCustomFooter(
 						getContextTokenSegments(ctx),
 						contextWindow,
 						tokens,
+						(text) => theme.fg(contextUsageBarStyle(percent), text),
 					)
 
 					let pct = percent !== null ? `${percent.toFixed(1)}%` : "?%"
