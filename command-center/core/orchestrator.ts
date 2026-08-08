@@ -338,14 +338,24 @@ export class Orchestrator {
 	 * Create and queue a mission for a host such as the GUI. Returns once the
 	 * mission stub and integration worktree are ready; agent work continues in
 	 * the background so the host is not blocked by a long-running session.
+	 *
+	 * A failed background drive (session creation, worktree, model errors) is
+	 * otherwise invisible to the host — surface it via `onDriveError` so a
+	 * queued-but-failed mission reads as an actionable error instead of a
+	 * later attach-time "no session" mystery.
 	 */
 	async queueMission(
 		description: string,
-		opts: { repoPath: string },
+		opts: {
+			repoPath: string
+			onDriveError?: (missionId: string, error: Error) => void
+		},
 	): Promise<string> {
 		const missionId = await this.prepareMission(description, opts)
 		void this.driveDefinedMission(missionId, description).catch((error) => {
-			console.error(`Mission ${missionId} failed:`, error)
+			const err = error instanceof Error ? error : new Error(String(error))
+			console.error(`Mission ${missionId} failed:`, err)
+			opts.onDriveError?.(missionId, err)
 		})
 		return missionId
 	}

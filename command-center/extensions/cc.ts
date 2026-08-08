@@ -15,6 +15,80 @@ import { ccCompletionForCursor } from "./cc-completions"
 let orch: Orchestrator | null = null
 
 /**
+ * Resolve the session thread file to attach to for a role, waiting (bounded)
+ * for the orchestrator to acquire the role's session AND for its persisted
+ * thread to appear on disk.
+ *
+ * Why wait for the thread FILE (not just the in-memory session): the pi SDK
+ * writes a session's JSONL lazily — the runtime is "active" in memory as soon
+ * as it's acquired, but the file is only flushed once the model turn starts
+ * producing entries (observed ~3s after acquisition on a cold first turn).
+ * `SessionManager.list` therefore returns [] for a session that IS live, and
+ * attaching on the in-memory session alone fails with a spurious "No active
+ * session found". Polling closes that window.
+ *
+ * Falls back to the role's most recent persisted thread when there is no live
+ * in-memory session (engine restarted, or the mission parked idle) — same
+ * semantics as the pre-existing attach path. Returns undefined only when
+ * there is genuinely nothing to attach to (or the mission's repo is gone).
+ */
+async function resolveAttachTarget(
+	orch: Orchestrator,
+	missionId: string,
+	roleName: RoleName,
+	workItemId?: number,
+	timeoutMs = 20000,
+): Promise<{ path: string } | undefined> {
+	// Resolve the role's worktree cwd. cwdFor throws when the mission's repo
+	// isn't registered (terminal/deleted mission) — treat as "no target".
+	let cwd: string | undefined
+	try {
+		cwd = orch.cwdFor({ missionId, roleName, workItemId })
+	} catch {
+		cwd = undefined
+	}
+
+	const deadline = Date.now() + timeoutMs
+	for (;;) {
+		const active = orch.getActiveSession(missionId, roleName, workItemId)
+		if (active && cwd) {
+			const sessions = await SessionManager.list(cwd)
+			const live = sessions.find((s) => s.id === active.sessionId)
+			if (live) return { path: live.path }
+		}
+		if (Date.now() >= deadline) break
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+
+	// No live session (or its thread never flushed): attach to the role's most
+	// recent persisted thread instead. SessionManager.list returns sessions
+	// newest-first by modified time.
+	if (cwd) {
+		const sessions = await SessionManager.list(cwd)
+		const fallback = sessions[0]
+		if (fallback) return { path: fallback.path }
+	}
+	return undefined
+}
+
+/** Switch the UI to a session thread file (shared by /cc attach and /cc start). */
+async function attachToPath(
+	ctx: ExtensionCommandContext,
+	path: string,
+	missionId: string,
+	roleName: RoleName,
+): Promise<void> {
+	await ctx.ui.notify(
+		`Switching focus to Mission ${missionId} Role ${roleName}...`,
+		"info",
+	)
+	const result = await ctx.switchSession(path, {})
+	if (result?.cancelled) {
+		await ctx.ui.notify(`Session switch cancelled`, "error")
+	}
+}
+
+/**
  * Switch the UI to a role's session (attach semantics shared by `/cc attach`
  * and the auto-attach after `/cc start`).
  */
@@ -25,64 +99,20 @@ async function attachToRole(
 	roleName: RoleName,
 	workItemId?: number,
 ): Promise<void> {
-	// Resolve the role's worktree cwd. cwdFor throws when the mission's repo
-	// isn't registered (terminal/deleted mission) — surface as a clean error
-	// rather than an unhandled rejection.
-	let cwd: string | undefined
-	try {
-		cwd = orch.cwdFor({ missionId, roleName, workItemId })
-	} catch {
-		cwd = undefined
-	}
-
-	const sessions = cwd ? await SessionManager.list(cwd) : []
-	const active = orch.getActiveSession(missionId, roleName, workItemId)
-	let targetSessionInfo = active
-		? sessions.find((s) => s.id === active.sessionId)
-		: undefined
-	if (!targetSessionInfo && sessions.length > 0) {
-		// No live in-memory session (engine restarted, or the mission is
-		// parked idle and the orchestrator isn't holding the role's session):
-		// attach to the role's most recent persisted thread instead.
-		// SessionManager.list returns sessions newest-first by modified time.
-		targetSessionInfo = sessions[0]
-	}
-
-	if (!targetSessionInfo) {
+	const target = await resolveAttachTarget(
+		orch,
+		missionId,
+		roleName,
+		workItemId,
+	)
+	if (!target) {
 		await ctx.ui.notify(
 			`No active session found for mission ${missionId} role ${roleName}`,
 			"error",
 		)
 		return
 	}
-
-	await ctx.ui.notify(
-		`Switching focus to Mission ${missionId} Role ${roleName}...`,
-		"info",
-	)
-	const result = await ctx.switchSession(targetSessionInfo.path, {})
-	if (result?.cancelled) {
-		await ctx.ui.notify(`Session switch cancelled`, "error")
-	}
-}
-
-/**
- * Wait (bounded) for the orchestrator to acquire a role's session. Returns
- * once the session exists or `timeoutMs` elapses — the caller's persisted-
- * session fallback in attachToRole covers the timeout case.
- */
-async function waitForRoleSession(
-	orch: Orchestrator,
-	missionId: string,
-	roleName: RoleName,
-	workItemId?: number,
-	timeoutMs = 20000,
-): Promise<void> {
-	const deadline = Date.now() + timeoutMs
-	while (Date.now() < deadline) {
-		if (orch.getActiveSession(missionId, roleName, workItemId)) return
-		await new Promise((resolve) => setTimeout(resolve, 100))
-	}
+	await attachToPath(ctx, target.path, missionId, roleName)
 }
 
 export default function (pi: ExtensionAPI) {
@@ -181,11 +211,24 @@ export default function (pi: ExtensionAPI) {
 					return
 				}
 				// Queue the mission so the command returns immediately; the
-				// orchestrator drives the lead in the background.
-				const missionId = await orch.queueMission(description, { repoPath })
+				// orchestrator drives the lead in the background. A failed drive
+				// (session creation / worktree / model errors) surfaces via
+				// onDriveError — otherwise it'd read as a confusing
+				// "No active session found" later.
+				const missionId = await orch.queueMission(description, {
+					repoPath,
+					onDriveError: (id, error) => {
+						ctx.ui.notify(
+							`Mission ${id} failed to start: ${error.message}`,
+							"error",
+						)
+					},
+				})
 				await ctx.ui.notify(`Started mission ${missionId}`, "info")
-				// Automatically switch to the new mission's lead session.
-				await waitForRoleSession(orch, missionId, "mission_lead")
+				// Automatically switch to the new mission's lead session. The
+				// lead's thread file is written lazily (only once its first model
+				// turn flushes entries), so resolveAttachTarget waits for it
+				// rather than attaching to an in-memory-only session.
 				await attachToRole(ctx, orch, missionId, "mission_lead")
 			} else if (cmd === "abort") {
 				const missionId = argsList[1]
