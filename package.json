@@ -27,7 +27,11 @@
 	},
 	"scripts": {
 		"lint": "bunx --bun @biomejs/biome check --write",
-		"start": "bun run server.ts"
+		"start": "bun run server.ts",
+		"typecheck": "tsc --noEmit",
+		"check": "biome check .",
+		"check:fix": "biome check . --fix",
+		"verify": "bun run check && bun run typecheck && bun test"
 	},
 	"dependencies": {
 		"@pierre/diffs": "^1.2.10"
