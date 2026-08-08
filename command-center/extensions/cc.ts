@@ -1,8 +1,14 @@
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
+	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
-import { SessionManager } from "@earendil-works/pi-coding-agent"
+import {
+	getMarkdownTheme,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent"
+import { Markdown } from "@earendil-works/pi-tui"
 import { FileDriverLock } from "../core/driver-lock"
 import { Orchestrator } from "../core/orchestrator"
 import { PiSessionRunner } from "../core/session"
@@ -10,9 +16,20 @@ import { FileStore } from "../core/store-file"
 import type { RoleName } from "../core/types"
 import { WorktreeProvisioner } from "../core/worktree/provisioner"
 import { ccCompletionForCursor } from "./cc-completions"
+import {
+	buildMissionsMarkdown,
+	MISSIONS_WIDGET_KEY,
+	MISSIONS_WIDGET_TITLE,
+	type MissionWidgetRow,
+	missionsTopBorder,
+	relatedMissions,
+	stripTableBorders,
+} from "./cc-missions-widget"
 
 // Module-level state survives session switches (because the Node module stays in memory).
 let orch: Orchestrator | null = null
+/** The live session context, refreshed on every session_start (widget target). */
+let widgetCtx: ExtensionContext | undefined
 
 /**
  * Resolve the session thread file to attach to for a role, waiting (bounded)
@@ -115,6 +132,51 @@ async function attachToRole(
 	await attachToPath(ctx, target.path, missionId, roleName)
 }
 
+/**
+ * Re-render the missions pinned above the input editor for the current
+ * session. Missions whose repo source path equals the session's cwd are
+ * shown; an empty list clears the widget. Called on session_start, on
+ * orchestrator events that change mission state, and after every /cc command.
+ */
+async function refreshMissionsWidget(): Promise<void> {
+	const ctx = widgetCtx
+	if (!ctx?.hasUI || !orch) return
+	const missions = await orch.store.listMissions()
+	const related = relatedMissions(missions, ctx.cwd)
+	if (related.length === 0) {
+		ctx.ui.setWidget(MISSIONS_WIDGET_KEY, undefined)
+		return
+	}
+	// "Session attached" = a live process holds the mission's driver lock
+	// (a pi session is currently driving the mission).
+	const driverLock = orch.driverLock
+	const rows: MissionWidgetRow[] = await Promise.all(
+		related.map(async (mission) => ({
+			mission,
+			sessionAttached: (await driverLock.status(mission.id)).held,
+		})),
+	)
+	// Render the missions as a markdown table: the Markdown component owns the
+	// column sizing, cell wrapping and narrow-width fallback. Strip the
+	// table's horizontal borders, header and outer walls, indent the rows,
+	// and frame the top with the Command Center title border.
+	ctx.ui.setWidget(MISSIONS_WIDGET_KEY, (_tui, theme) => {
+		const fg = (color: ThemeColor, text: string) => theme.fg(color, text)
+		const markdown = buildMissionsMarkdown(rows, fg)
+		const md = new Markdown(markdown, 0, 0, getMarkdownTheme())
+		return {
+			render: (width) => [
+				missionsTopBorder(MISSIONS_WIDGET_TITLE, fg, width),
+				...stripTableBorders(md.render(width)).map((line) =>
+					// Rows sit under the title border with a left indent.
+					line ? `  ${line}` : line,
+				),
+			],
+			invalidate: () => md.invalidate(),
+		}
+	})
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!orch) {
@@ -145,12 +207,26 @@ export default function (pi: ExtensionAPI) {
 						"info",
 					)
 				}
+				// Keep the pinned missions list in sync with mission state.
+				if (
+					e.type === "mission-status-changed" ||
+					e.type === "work-item-status-changed" ||
+					e.type === "mission-defined" ||
+					e.type === "mission-deleted"
+				) {
+					void refreshMissionsWidget()
+				}
 			})
 
 			// NO auto-resume: missions are driven only by explicit /cc commands
 			// (start / resume / reply / accept / reject / abort / delete), each
 			// of which acquires the mission's driver lock.
 		}
+
+		// The widget targets the CURRENT session: refresh the context on every
+		// session_start (new/resume/fork/reload can change the cwd).
+		widgetCtx = ctx
+		await refreshMissionsWidget()
 
 		// /cc argument completions via a wrapper around the built-in provider.
 		// The built-in slash-command provider replaces the WHOLE argument text
@@ -181,6 +257,13 @@ export default function (pi: ExtensionAPI) {
 				)
 			},
 		}))
+	})
+
+	pi.on("session_shutdown", () => {
+		// The runner clears extension widgets on teardown; dropping the context
+		// stops background-drive events from touching a torn-down UI. The next
+		// session_start re-establishes it.
+		widgetCtx = undefined
 	})
 
 	pi.registerCommand("cc", {
@@ -341,6 +424,11 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				await ctx.ui.notify(`Unknown command: /cc ${cmd}`, "error")
 			}
+
+			// Mission state may have changed (start/delete/abort/accept/…). The
+			// orchestrator emits events for background drives, but /cc start's
+			// stub write emits none — refresh unconditionally.
+			void refreshMissionsWidget()
 		},
 	})
 }
