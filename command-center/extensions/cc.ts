@@ -56,25 +56,33 @@ async function resolveAttachTarget(
 	workItemId?: number,
 	timeoutMs = 20000,
 ): Promise<{ path: string } | undefined> {
-	// Resolve the role's worktree cwd. cwdFor throws when the mission's repo
-	// isn't registered (terminal/deleted mission) — treat as "no target".
+	// Resolve the role's worktree cwd. Attach is read-only and must work after a
+	// process restart, so first register the mission's repo from the persisted
+	// store (driving entry points register implicitly; a fresh process has none
+	// registered). Unknown/deleted missions (not in the store) stay "no target".
 	let cwd: string | undefined
 	try {
+		await orch.registerMission(missionId)
 		cwd = orch.cwdFor({ missionId, roleName, workItemId })
 	} catch {
 		cwd = undefined
 	}
 
-	const deadline = Date.now() + timeoutMs
-	for (;;) {
-		const active = orch.getActiveSession(missionId, roleName, workItemId)
-		if (active && cwd) {
+	// Only poll for a live session when one is actually active in-memory: the
+	// SDK flushes a session's thread file lazily (~3s after acquisition), so
+	// attach must wait for it to appear. When no session is active (the common
+	// attach-after-restart case) there is nothing to wait for — fall straight
+	// through to the persisted-thread fallback below.
+	const active = orch.getActiveSession(missionId, roleName, workItemId)
+	if (active && cwd) {
+		const deadline = Date.now() + timeoutMs
+		for (;;) {
 			const sessions = await SessionManager.list(cwd)
 			const live = sessions.find((s) => s.id === active.sessionId)
 			if (live) return { path: live.path }
+			if (Date.now() >= deadline) break
+			await new Promise((resolve) => setTimeout(resolve, 100))
 		}
-		if (Date.now() >= deadline) break
-		await new Promise((resolve) => setTimeout(resolve, 100))
 	}
 
 	// No live session (or its thread never flushed): attach to the role's most

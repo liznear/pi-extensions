@@ -985,6 +985,23 @@ export class Orchestrator {
 		return session
 	}
 
+	/**
+	 * Register a persisted mission's repo with this Orchestrator so read-only
+	 * operations that resolve a role's cwd (e.g. /cc attach) work without a
+	 * drive. Driving entry points (queueMission / resumeMission) register
+	 * implicitly; attach must work across process restarts, so it registers
+	 * from the Store before resolving cwd.
+	 *
+	 * Idempotent: no-op when the mission is already registered. Throws when
+	 * the mission isn't in the store (deleted/unknown).
+	 */
+	async registerMission(missionId: string): Promise<void> {
+		if (this.repoByMission.has(missionId)) return
+		const mission = await this.store.readMission(missionId)
+		if (!mission) throw new Error(`Unknown mission: ${missionId}`)
+		this.repoByMission.set(missionId, mission.repoPath)
+	}
+
 	/** Map a role to its worktree directory (lead → integration; owner → owner). */
 	public cwdFor(who: RoleIdentity): string {
 		const repoPath = this.repoFor(who.missionId)

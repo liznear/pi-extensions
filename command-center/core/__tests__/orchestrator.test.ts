@@ -900,4 +900,47 @@ describe("Orchestrator — driver lock (multi-process)", () => {
 		expect((await store.readMission("m1"))?.status).toBe("in_progress")
 		expect(lock.releaseCalls).toBe(1)
 	})
+
+	// ---------------------------------------------------------------------
+	// registerMission (read-only repo registration, e.g. /cc attach)
+	// ---------------------------------------------------------------------
+
+	test("registerMission loads a persisted mission's repo so cwdFor resolves without a drive", async () => {
+		const { orch, store } = makeOrch()
+		const missionId = "attach-target"
+
+		// A mission persisted in the store but never driven by this process.
+		await store.writeMission({
+			id: missionId,
+			repoPath: "/test-repo",
+			title: "Test Mission",
+			description: "desc",
+			acceptanceCriteria: ["It works"],
+			status: "in_progress",
+		})
+
+		// Before registration, cwd resolution fails (the in-memory repo map is
+		// empty on a fresh process).
+		expect(() => orch.cwdFor({ missionId, roleName: "mission_lead" })).toThrow(
+			/No repo registered/,
+		)
+
+		await orch.registerMission(missionId)
+		expect(orch.cwdFor({ missionId, roleName: "mission_lead" })).toBe(
+			"/fake-repo/.command-center/worktrees/attach-target/integration",
+		)
+
+		// Idempotent: a second registration is a no-op.
+		await orch.registerMission(missionId)
+		expect(orch.cwdFor({ missionId, roleName: "mission_lead" })).toBe(
+			"/fake-repo/.command-center/worktrees/attach-target/integration",
+		)
+	})
+
+	test("registerMission throws for a mission missing from the store", async () => {
+		const { orch } = makeOrch()
+		expect(orch.registerMission("ghost-mission")).rejects.toThrow(
+			/Unknown mission: ghost-mission/,
+		)
+	})
 })
