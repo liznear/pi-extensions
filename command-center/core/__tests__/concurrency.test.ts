@@ -133,7 +133,7 @@ describe("Orchestrator — Concurrency Layer (Ticket 12)", () => {
 		expect(maxActiveOwnerTurns).toBe(2)
 	})
 
-	test("resume all-at-once via start()", async () => {
+	test("resume all-at-once, bounded by the shared session semaphore", async () => {
 		const store = new InMemoryStore()
 
 		// Seed 2 non-terminal missions with ready items
@@ -238,8 +238,10 @@ describe("Orchestrator — Concurrency Layer (Ticket 12)", () => {
 			},
 		})
 
-		// `start()` resumes both missions.
-		await orch.start()
+		// Resume both missions explicitly (no auto-resume), fire-and-forget as
+		// start() used to: the drives run concurrently under the shared semaphore.
+		void orch.resumeMission("m1").catch(() => {})
+		void orch.resumeMission("m2").catch(() => {})
 
 		// Event loop settles, items are queued.
 		await new Promise((r) => setTimeout(r, 100))

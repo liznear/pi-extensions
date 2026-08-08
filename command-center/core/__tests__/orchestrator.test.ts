@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import type { DriverLock, LockAcquireResult } from "../driver-lock"
 import type { Event, EventBus, EventListener } from "../events"
 import { Orchestrator } from "../orchestrator"
 import { FakeSessionRunner } from "../session"
@@ -28,6 +29,7 @@ interface FakeAgents {
 	leadDecision?: (itemId: number) => "accept" | "rework" | "cancel"
 	leadFeedback?: string
 	concurrency?: number
+	driverLock?: DriverLock
 }
 
 /** Collect events into an array via a subscriber. */
@@ -122,6 +124,7 @@ function makeOrch(agents: FakeAgents = {}): {
 			return runner
 		},
 		concurrency: agents.concurrency ?? 2,
+		driverLock: agents.driverLock,
 	})
 	// The factory receives the orchestrator's own bus.
 	const bus = (orch as unknown as { bus: EventBus }).bus
@@ -343,10 +346,8 @@ describe("Orchestrator — provisioning failure leaves no orphan", () => {
 			}),
 		).rejects.toThrow("exit ENOENT")
 
-		// No orphaned stub survives the failure...
+		// No orphaned stub survives the failure.
 		expect(await orch.listMissions()).toEqual([])
-		// ...so start() has nothing to resume and does not re-throw.
-		await expect(orch.start()).resolves.toBeUndefined()
 	})
 })
 
@@ -690,5 +691,213 @@ describe("Orchestrator — active session registration", () => {
 
 		// Integration worktree is gone → the lead session handle is dropped.
 		expect(orch.getActiveSession(missionId, "mission_lead")).toBeUndefined()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Orchestrator — driver lock (multi-process coordination).
+// ---------------------------------------------------------------------------
+
+/** Records acquire/release calls; `stolen` simulates a foreign takeover. */
+class RecordingLock implements DriverLock {
+	acquireCalls: Array<{ force: boolean }> = []
+	releaseCalls = 0
+	stolen = false
+
+	async acquire(
+		_missionId: string,
+		opts: { force?: boolean } = {},
+	): Promise<LockAcquireResult> {
+		this.acquireCalls.push({ force: opts.force ?? false })
+		return { acquired: true }
+	}
+
+	async release() {
+		this.releaseCalls++
+	}
+
+	async status() {
+		return { held: !this.stolen, byMe: !this.stolen }
+	}
+
+	async isHeldByMe() {
+		return !this.stolen
+	}
+}
+
+describe("Orchestrator — driver lock (multi-process)", () => {
+	test("resumeMission force-acquires the driver lock and releases it after the drive parks", async () => {
+		const lock = new RecordingLock()
+		const { orch, store } = makeOrch({ driverLock: lock })
+
+		// Seed a mission with a plan so resume drives it (defineMission is not involved).
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await store.writePlan("m1", {
+			items: [
+				{
+					id: 1,
+					title: "A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+
+		const tookOver = await orch.resumeMission("m1")
+
+		expect(tookOver).toBeUndefined()
+		expect(lock.acquireCalls).toEqual([{ force: true }])
+		expect(lock.releaseCalls).toBe(1)
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe("accepted")
+	})
+
+	test("defineMission acquires the driver lock without force and releases after the drive parks", async () => {
+		const lock = new RecordingLock()
+		const { orch } = makeOrch({ driverLock: lock })
+
+		const missionId = await orch.defineMission("Test mission", {
+			repoPath: "/test-repo",
+		})
+
+		expect(missionId).toMatch(/^[0-9a-z]{8}$/)
+		expect(lock.acquireCalls).toEqual([{ force: false }])
+		expect(lock.releaseCalls).toBe(1)
+	})
+
+	test("a drive stops immediately when the lock is not held when the loop starts", async () => {
+		const lock = new RecordingLock()
+		lock.stolen = true // another process holds it (or took it mid-run)
+		const { orch, store } = makeOrch({ driverLock: lock })
+
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await store.writePlan("m1", {
+			items: [
+				{
+					id: 1,
+					title: "A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+
+		await orch.resumeMission("m1")
+
+		// Nothing was dispatched; the loop parked on the displacement guard.
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe("pending")
+		expect(lock.releaseCalls).toBe(1)
+	})
+
+	test("a displaced driver stops mid-run when another process steals the lock", async () => {
+		const store = new InMemoryStore()
+		const wt = new FakeWorktreeProvider()
+		const lock = new RecordingLock()
+
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await store.writePlan("m1", {
+			items: [
+				{
+					id: 1,
+					title: "A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+
+		let ownerStarted!: () => void
+		let releaseOwner!: () => void
+		const ownerStartedP = new Promise<void>((r) => {
+			ownerStarted = r
+		})
+		const ownerBlockedP = new Promise<void>((r) => {
+			releaseOwner = r
+		})
+
+		const orch = new Orchestrator({
+			store,
+			worktreeProvider: wt,
+			driverLock: lock,
+			sessionRunner: (bus) =>
+				new FakeSessionRunner(bus, {
+					onPrompt: async (session) => {
+						if (session.who.roleName === "work_item_owner") {
+							ownerStarted()
+							await ownerBlockedP
+							bus.emit({
+								type: "tool-call-ended",
+								missionId: session.who.missionId,
+								roleName: "work_item_owner",
+								workItemId: session.who.workItemId,
+								toolCallId: "tc-1",
+								toolName: "request_review",
+								result: { details: { summary: "done" } },
+								isError: false,
+							})
+						} else {
+							// Lead reviews: accept item 1 (write the accepted status,
+							// as the real review_work_item tool does).
+							const itemId = 1
+							await store.writeWorkItemStatus(
+								session.who.missionId,
+								itemId,
+								"accepted",
+							)
+							bus.emit({
+								type: "tool-call-ended",
+								missionId: session.who.missionId,
+								roleName: "mission_lead",
+								toolCallId: "rw-1",
+								toolName: "review_work_item",
+								result: {
+									details: {
+										decision: "accept",
+										applied: true,
+										workItemId: itemId,
+									},
+								},
+								isError: false,
+							})
+						}
+					},
+				}),
+		})
+
+		const drive = orch.resumeMission("m1")
+		await ownerStartedP // the owner's turn is in flight
+		lock.stolen = true // another process takes over the drive mid-run
+		releaseOwner()
+
+		await drive
+
+		// The in-flight item finished, but the drive stopped BEFORE the roll-up:
+		// the mission stays in_progress instead of reaching ready_for_acceptance.
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe("accepted")
+		expect((await store.readMission("m1"))?.status).toBe("in_progress")
+		expect(lock.releaseCalls).toBe(1)
 	})
 })

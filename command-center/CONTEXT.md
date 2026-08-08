@@ -119,13 +119,26 @@ _Avoid_: escalation, blocker, ticket
 
 **Run**:
 One execution of the Orchestrator, from process start to stop. A Mission spans many Runs
-across restarts.
+across restarts. A Run may drive a Mission only while it holds that Mission's Driver Lock;
+explicit commands take the lock over, and a displaced Run stops at its next loop iteration.
 _Avoid_: process, instance, invocation
 
+**Driver Lock**:
+The cross-process protocol that guarantees a Mission has at most one driver at a time:
+a per-Mission advisory lock file (`<storeRoot>/missions/<id>/driver.lock`) recording the
+driving Run's pid + hostname. A Run acquires the lock before any drive entry point and
+releases it when the drive parks or the Mission terminates. Explicit commands
+(`/cc start` / `resume` / `reply` / `accept` / `reject` / `abort` / `delete`) take the
+lock over; a displaced driver stops at its next loop iteration. A lock whose holder's pid
+is dead (crash) is stale and reclaimable. Read-only commands (`list`, `attach`) don't
+drive, but `attach` refuses a Mission another live process is driving.
+_Avoid_: mutex, semaphore, lease
+
 **Resume**:
-The act of a new Run reconstructing the Orchestrator's in-flight view from persisted
-state and re-entering the dispatch/plan-review loop autonomously — so an interruption
-between Runs is invisible to the human. Loop position is _derived_ from the persisted
-Mission/Plan (the Work-Item status machine is the checkpoint), never stored or replayed;
-a turn interrupted by a crash is re-driven, not replayed.
+The act of a Run reconstructing the Orchestrator's in-flight view from persisted state and
+re-entering the dispatch/plan-review loop — always explicit, never automatic: a Run
+resumes because a host called a drive method (`/cc resume`, a human-input reply, an
+accept/reject decision), not because a session started. Loop position is _derived_ from
+the persisted Mission/Plan (the Work-Item status machine is the checkpoint), never stored
+or replayed; a turn interrupted by a crash is re-driven, not replayed.
 _Avoid_: restart (a fresh Run with no carried-over state), recover, boot

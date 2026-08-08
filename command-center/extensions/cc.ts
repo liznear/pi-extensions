@@ -1,5 +1,9 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
+import { FileDriverLock } from "../core/driver-lock"
 import { Orchestrator } from "../core/orchestrator"
 import { PiSessionRunner } from "../core/session"
 import { FileStore } from "../core/store-file"
@@ -10,6 +14,77 @@ import { ccCompletionForCursor } from "./cc-completions"
 // Module-level state survives session switches (because the Node module stays in memory).
 let orch: Orchestrator | null = null
 
+/**
+ * Switch the UI to a role's session (attach semantics shared by `/cc attach`
+ * and the auto-attach after `/cc start`).
+ */
+async function attachToRole(
+	ctx: ExtensionCommandContext,
+	orch: Orchestrator,
+	missionId: string,
+	roleName: RoleName,
+	workItemId?: number,
+): Promise<void> {
+	// Resolve the role's worktree cwd. cwdFor throws when the mission's repo
+	// isn't registered (terminal/deleted mission) — surface as a clean error
+	// rather than an unhandled rejection.
+	let cwd: string | undefined
+	try {
+		cwd = orch.cwdFor({ missionId, roleName, workItemId })
+	} catch {
+		cwd = undefined
+	}
+
+	const sessions = cwd ? await SessionManager.list(cwd) : []
+	const active = orch.getActiveSession(missionId, roleName, workItemId)
+	let targetSessionInfo = active
+		? sessions.find((s) => s.id === active.sessionId)
+		: undefined
+	if (!targetSessionInfo && sessions.length > 0) {
+		// No live in-memory session (engine restarted, or the mission is
+		// parked idle and the orchestrator isn't holding the role's session):
+		// attach to the role's most recent persisted thread instead.
+		// SessionManager.list returns sessions newest-first by modified time.
+		targetSessionInfo = sessions[0]
+	}
+
+	if (!targetSessionInfo) {
+		await ctx.ui.notify(
+			`No active session found for mission ${missionId} role ${roleName}`,
+			"error",
+		)
+		return
+	}
+
+	await ctx.ui.notify(
+		`Switching focus to Mission ${missionId} Role ${roleName}...`,
+		"info",
+	)
+	const result = await ctx.switchSession(targetSessionInfo.path, {})
+	if (result?.cancelled) {
+		await ctx.ui.notify(`Session switch cancelled`, "error")
+	}
+}
+
+/**
+ * Wait (bounded) for the orchestrator to acquire a role's session. Returns
+ * once the session exists or `timeoutMs` elapses — the caller's persisted-
+ * session fallback in attachToRole covers the timeout case.
+ */
+async function waitForRoleSession(
+	orch: Orchestrator,
+	missionId: string,
+	roleName: RoleName,
+	workItemId?: number,
+	timeoutMs = 20000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		if (orch.getActiveSession(missionId, roleName, workItemId)) return
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!orch) {
@@ -18,6 +93,9 @@ export default function (pi: ExtensionAPI) {
 				sessionRunner: (bus, store) => new PiSessionRunner({ bus, store }),
 				worktreeProvider: new WorktreeProvisioner(),
 				store,
+				// Cross-process coordination: exactly one process may drive a
+				// mission at a time. Explicit /cc commands force-takeover.
+				driverLock: new FileDriverLock(),
 			})
 
 			orch.subscribeAll((e) => {
@@ -39,10 +117,9 @@ export default function (pi: ExtensionAPI) {
 				}
 			})
 
-			// Hydrate / resume missions
-			orch.start().catch((err) => {
-				console.error("Error starting orchestrator:", err)
-			})
+			// NO auto-resume: missions are driven only by explicit /cc commands
+			// (start / resume / reply / accept / reject / abort / delete), each
+			// of which acquires the mission's driver lock.
 		}
 
 		// /cc argument completions via a wrapper around the built-in provider.
@@ -103,8 +180,13 @@ export default function (pi: ExtensionAPI) {
 					await ctx.ui.notify("Usage: /cc start <description>", "error")
 					return
 				}
-				const missionId = await orch.defineMission(description, { repoPath })
+				// Queue the mission so the command returns immediately; the
+				// orchestrator drives the lead in the background.
+				const missionId = await orch.queueMission(description, { repoPath })
 				await ctx.ui.notify(`Started mission ${missionId}`, "info")
+				// Automatically switch to the new mission's lead session.
+				await waitForRoleSession(orch, missionId, "mission_lead")
+				await attachToRole(ctx, orch, missionId, "mission_lead")
 			} else if (cmd === "abort") {
 				const missionId = argsList[1]
 				const workItemId = argsList[2]
@@ -152,51 +234,34 @@ export default function (pi: ExtensionAPI) {
 				const roleName: RoleName =
 					workItemId !== undefined ? "work_item_owner" : "mission_lead"
 
-				const session = orch.getActiveSession(missionId, roleName, workItemId)
-
-				// Resolve the role's worktree cwd. cwdFor throws when the mission's repo
-				// isn't registered (terminal/deleted mission) — surface as a clean error
-				// rather than an unhandled rejection.
-				let cwd: string | undefined
-				try {
-					cwd = orch.cwdFor({ missionId, roleName, workItemId })
-				} catch {
-					cwd = undefined
-				}
-
-				const sessions = cwd ? await SessionManager.list(cwd) : []
-				let targetSessionInfo = session
-					? sessions.find((s) => s.id === session.sessionId)
-					: undefined
-				if (!targetSessionInfo && sessions.length > 0) {
-					// No live in-memory session (engine restarted, or the mission is
-					// parked idle and the orchestrator isn't holding the role's session):
-					// attach to the role's most recent persisted thread instead.
-					// SessionManager.list returns sessions newest-first by modified time.
-					targetSessionInfo = sessions[0]
-				}
-
-				if (!targetSessionInfo) {
+				// Multi-process guard: attaching to a mission another live
+				// process is driving would race concurrent writers on the role's
+				// session thread. Attach there, or take over the drive first.
+				const lock = await orch.driverLock.status(missionId)
+				if (lock.held && !lock.byMe) {
 					await ctx.ui.notify(
-						`No active session found for mission ${missionId} role ${roleName}`,
+						`Mission ${missionId} is driven by pid ${lock.holder?.pid} in another process. Attach there, or run /cc resume to take over first.`,
 						"error",
 					)
 					return
 				}
 
-				await ctx.ui.notify(
-					`Switching focus to Mission ${missionId} Role ${roleName}...`,
-					"info",
-				)
-				const result = await ctx.switchSession(targetSessionInfo.path, {})
-				if (result?.cancelled) {
-					await ctx.ui.notify(`Session switch cancelled`, "error")
-				}
+				await attachToRole(ctx, orch, missionId, roleName, workItemId)
 			} else if (cmd === "resume") {
 				const targetMissionId = argsList[1]
-				if (targetMissionId) {
-					await orch.resumeMission(targetMissionId)
+				if (!targetMissionId) {
+					await ctx.ui.notify("Usage: /cc resume <missionId>", "error")
+					return
 				}
+				// Explicit takeover: force-acquires the driver lock; a displaced
+				// driver in another process stops at its next loop iteration.
+				const tookOverFrom = await orch.resumeMission(targetMissionId)
+				await ctx.ui.notify(
+					tookOverFrom
+						? `Resumed mission ${targetMissionId} (took over from pid ${tookOverFrom.pid})`
+						: `Resumed mission ${targetMissionId}`,
+					"info",
+				)
 			} else if (cmd === "reply") {
 				const missionId = argsList[1]
 				const requestId = argsList[2]

@@ -58,7 +58,10 @@ import { summarizeWorkItems } from "./types"
 //         different files.
 //   - Status writes (writeMissionStatus / writeWorkItemStatus) are
 //     read-modify-write on the respective file, also single-writer (reactor).
-//   - Cross-process / multi-process safety is out of scope (run-model).
+//   - Cross-process coordination is provided by the Driver Lock
+//     (core/driver-lock.ts): a Run holds the mission's lock while it drives,
+//     and explicit commands take the lock over — so at most one driver
+//     writes any given mission's files at a time.
 //
 // No-op-on-absent mirrors InMemoryStore semantics: a status write targeting a
 // missing mission / plan / item returns without writing or throwing.

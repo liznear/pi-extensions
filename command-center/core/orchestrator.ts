@@ -1,4 +1,9 @@
 import { computeReadySet, rollupPredicate, stuckPredicate } from "./dag"
+import {
+	type DriverLock,
+	type DriverLockInfo,
+	NoopDriverLock,
+} from "./driver-lock"
 import { type Event, EventBus, type EventListener } from "./events"
 import { generateMissionId } from "./identity"
 import type { RoleToolContext } from "./role"
@@ -35,9 +40,10 @@ import {
 // the review loop, merges accepted work, and surfaces the human Acceptance gate.
 //
 // Construction:
-//   new Orchestrator({ repoPath?, store?, concurrency?, sessionRunner?, worktreeProvider? })
+//   new Orchestrator({ repoPath?, store?, concurrency?, sessionRunner?, worktreeProvider?, driverLock? })
 //
-// All dependencies are swappable seams (Store, SessionRunner, WorktreeProvider).
+// All dependencies are swappable seams (Store, SessionRunner, WorktreeProvider,
+// DriverLock).
 // ---------------------------------------------------------------------------
 
 export interface OrchestratorOptions {
@@ -56,10 +62,21 @@ export interface OrchestratorOptions {
 	sessionRunner?: (bus: EventBus, store: Store) => SessionRunner
 	/** Worktree operations. Default: WorktreeProvisioner() (stateless; Model C). */
 	worktreeProvider?: WorktreeProvider
+	/**
+	 * Cross-process coordination: the driver lock serializing who may drive a
+	 * mission across pi processes. Default: NoopDriverLock (single-process
+	 * consumers / tests). A multi-process consumer wires a FileDriverLock.
+	 */
+	driverLock?: DriverLock
 }
 
 export class Orchestrator {
 	readonly store: Store
+	/**
+	 * The driver lock (cross-process coordination). Public for read-side
+	 * status checks (e.g. /cc attach gating).
+	 */
+	readonly driverLock: DriverLock
 	readonly bus = new EventBus()
 	private readonly sessionSemaphore: Semaphore
 	private readonly sessionRunner: SessionRunner
@@ -87,6 +104,7 @@ export class Orchestrator {
 
 	constructor(opts: OrchestratorOptions = {}) {
 		this.store = opts.store ?? new InMemoryStore()
+		this.driverLock = opts.driverLock ?? new NoopDriverLock()
 		const concurrency = opts.concurrency ?? 2
 		this.sessionSemaphore = opts.sessionSemaphore ?? new Semaphore(concurrency)
 		this.worktree = opts.worktreeProvider ?? new WorktreeProvisioner()
@@ -138,40 +156,42 @@ export class Orchestrator {
 	}
 
 	/**
-	 * Resume all non-terminal missions. One-shot catch-up on engine start.
+	 * Resume a single mission and drive it to its next park point (idle at the
+	 * acceptance gate, stuck, or terminal). Driving is ALWAYS explicit — there
+	 * is no auto-resume at startup: this is called by the host (/cc resume) or
+	 * by re-drives after human input (replyHumanInput).
+	 *
+	 * Taking over an in-flight drive in another process is intended behavior:
+	 * this force-acquires the mission's driver lock, and the displaced driver
+	 * stops at its next loop iteration.
+	 *
+	 * @returns the displaced holder, when this call took the drive over from a
+	 *          live foreign process (undefined otherwise).
 	 */
-	async start(): Promise<void> {
-		const missions = await this.listMissions()
-		for (const m of missions) {
-			if (m.status !== "completed" && m.status !== "cancelled") {
-				this.resumeMission(m.id).catch((err) => {
-					console.error(`Failed to resume mission ${m.id}:`, err)
-				})
+	async resumeMission(missionId: string): Promise<DriverLockInfo | undefined> {
+		const tookOverFrom = await this.acquireDriveLock(missionId, true)
+		try {
+			const mission = await this.store.readMission(missionId)
+			if (!mission)
+				throw new Error(`corrupt domain state: missing mission ${missionId}`)
+			this.repoByMission.set(missionId, mission.repoPath)
+
+			const plan = await this.store.readPlan(missionId)
+			if (!plan) {
+				// Mission stubbed but not planned (or planning was interrupted).
+				const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
+				const session = await this.acquireSession(lead)
+				// Resume prompt signals continue
+				await this.promptAndCollect(session, "Continue with your work.")
+				await this.dispatchAndDrive(missionId)
+				return tookOverFrom
 			}
-		}
-	}
 
-	/**
-	 * Resume a single mission (called by start(), or to re-drive after human input).
-	 */
-	async resumeMission(missionId: string): Promise<void> {
-		const mission = await this.store.readMission(missionId)
-		if (!mission)
-			throw new Error(`corrupt domain state: missing mission ${missionId}`)
-		this.repoByMission.set(missionId, mission.repoPath)
-
-		const plan = await this.store.readPlan(missionId)
-		if (!plan) {
-			// Mission stubbed but not planned (or planning was interrupted).
-			const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
-			const session = await this.acquireSession(lead)
-			// Resume prompt signals continue
-			await this.promptAndCollect(session, "Continue with your work.")
 			await this.dispatchAndDrive(missionId)
-			return
+			return tookOverFrom
+		} finally {
+			await this.driverLock.release(missionId)
 		}
-
-		await this.dispatchAndDrive(missionId)
 	}
 
 	/**
@@ -212,44 +232,51 @@ export class Orchestrator {
 	 * removes owner worktree.
 	 */
 	async abortWorkItem(missionId: string, workItemId: number): Promise<void> {
-		const key = this.sessionKey({
-			missionId,
-			roleName: "work_item_owner",
-			workItemId,
-		})
-		const session = this.activeSessions.get(key)
-		if (session) {
-			session.abort()
-			this.activeSessions.delete(key)
-		}
-		const plan = await this.store.readPlan(missionId)
-		if (plan) {
-			const itemIndex = plan.items.findIndex(
-				(i: WorkItem) => i.id === workItemId,
-			)
-			if (itemIndex >= 0 && plan.items[itemIndex]) {
-				const oldItem = plan.items[itemIndex]
-				const items = [...plan.items]
-				items[itemIndex] = {
-					id: oldItem.id,
-					title: oldItem.title,
-					description: oldItem.description,
-					dependencies: [...oldItem.dependencies],
-					status: "cancelled",
-				}
-				await this.store.writePlan(missionId, { ...plan, items })
-				this.bus.emit({
-					type: "work-item-status-changed",
-					missionId,
-					workItemId,
-					from: oldItem.status,
-					to: "cancelled",
-				})
+		// Explicit host action: take over the drive so the cancel persists and
+		// any other driver stops at its next loop iteration.
+		await this.acquireDriveLock(missionId, true)
+		try {
+			const key = this.sessionKey({
+				missionId,
+				roleName: "work_item_owner",
+				workItemId,
+			})
+			const session = this.activeSessions.get(key)
+			if (session) {
+				session.abort()
+				this.activeSessions.delete(key)
 			}
-		}
-		const repoPath = this.repoByMission.get(missionId)
-		if (repoPath) {
-			await this.worktree.removeOwnerWorktree(repoPath, missionId, workItemId)
+			const plan = await this.store.readPlan(missionId)
+			if (plan) {
+				const itemIndex = plan.items.findIndex(
+					(i: WorkItem) => i.id === workItemId,
+				)
+				if (itemIndex >= 0 && plan.items[itemIndex]) {
+					const oldItem = plan.items[itemIndex]
+					const items = [...plan.items]
+					items[itemIndex] = {
+						id: oldItem.id,
+						title: oldItem.title,
+						description: oldItem.description,
+						dependencies: [...oldItem.dependencies],
+						status: "cancelled",
+					}
+					await this.store.writePlan(missionId, { ...plan, items })
+					this.bus.emit({
+						type: "work-item-status-changed",
+						missionId,
+						workItemId,
+						from: oldItem.status,
+						to: "cancelled",
+					})
+				}
+			}
+			const repoPath = this.repoByMission.get(missionId)
+			if (repoPath) {
+				await this.worktree.removeOwnerWorktree(repoPath, missionId, workItemId)
+			}
+		} finally {
+			await this.driverLock.release(missionId)
 		}
 	}
 
@@ -258,34 +285,34 @@ export class Orchestrator {
 	 * sets mission status to cancelled, and removes all worktrees.
 	 */
 	async abortMission(missionId: string): Promise<void> {
-		for (const [key, session] of this.activeSessions.entries()) {
-			if (key.startsWith(`${missionId}:`)) {
-				session.abort()
-				this.activeSessions.delete(key)
+		await this.acquireDriveLock(missionId, true)
+		try {
+			this.abortMissionSessions(missionId)
+			const m = await this.store.readMission(missionId)
+			if (m) {
+				const previousStatus = m.status
+				await this.store.writeMission({ ...m, status: "cancelled" })
+				this.bus.emit({
+					type: "mission-status-changed",
+					missionId,
+					from: previousStatus,
+					to: "cancelled",
+				})
 			}
-		}
-		const m = await this.store.readMission(missionId)
-		if (m) {
-			const previousStatus = m.status
-			await this.store.writeMission({ ...m, status: "cancelled" })
-			this.bus.emit({
-				type: "mission-status-changed",
-				missionId,
-				from: previousStatus,
-				to: "cancelled",
-			})
-		}
-		const repoPath = this.repoByMission.get(missionId)
-		if (repoPath) {
-			// Tear down all worktrees (integration + owners)
-			try {
-				await this.worktree.removeIntegrationWorktree(repoPath, missionId)
-			} catch (err) {
-				console.error(
-					`Failed to tear down integration worktree for aborted mission ${missionId}:`,
-					err,
-				)
+			const repoPath = this.repoByMission.get(missionId)
+			if (repoPath) {
+				// Tear down all worktrees (integration + owners)
+				try {
+					await this.worktree.removeIntegrationWorktree(repoPath, missionId)
+				} catch (err) {
+					console.error(
+						`Failed to tear down integration worktree for aborted mission ${missionId}:`,
+						err,
+					)
+				}
 			}
+		} finally {
+			await this.driverLock.release(missionId)
 		}
 	}
 
@@ -334,7 +361,7 @@ export class Orchestrator {
 		// only repoPath/missionId (it never reads the store), and if it throws —
 		// invalid repo path, git missing (ENOENT), empty repo with no HEAD — no
 		// stub is left behind. Otherwise the orphaned stub would surface on the
-		// next start()/resumeMission and re-throw forever.
+		// next resumeMission and re-throw forever.
 		await this.worktree.ensureGitignored(repoPath)
 		await this.worktree.createIntegrationWorktree(repoPath, missionId)
 
@@ -354,12 +381,19 @@ export class Orchestrator {
 		missionId: string,
 		description: string,
 	): Promise<void> {
-		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
-		const session = await this.acquireSession(lead)
-		await this.promptAndCollect(session, this.missionStartPrompt(description))
+		// A freshly generated mission id cannot be held by anyone; plain acquire
+		// (a live-holder refusal here would be a pathological id clash).
+		await this.acquireDriveLock(missionId, false)
+		try {
+			const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
+			const session = await this.acquireSession(lead)
+			await this.promptAndCollect(session, this.missionStartPrompt(description))
 
-		// Drive the plan to completion.
-		await this.dispatchAndDrive(missionId)
+			// Drive the plan to completion.
+			await this.dispatchAndDrive(missionId)
+		} finally {
+			await this.driverLock.release(missionId)
+		}
 	}
 
 	/**
@@ -371,38 +405,45 @@ export class Orchestrator {
 		decision: "accept" | "reject",
 		feedback?: string,
 	): Promise<void> {
-		const mission = await this.store.readMission(missionId)
-		if (!mission) throw new Error(`Unknown mission: ${missionId}`)
+		// Explicit host action: take over the drive for the terminal transition
+		// (accept) or the re-plan drive (reject).
+		await this.acquireDriveLock(missionId, true)
+		try {
+			const mission = await this.store.readMission(missionId)
+			if (!mission) throw new Error(`Unknown mission: ${missionId}`)
 
-		if (decision === "accept") {
-			await this.transitionMission(missionId, "completed")
-			await this.worktree.removeIntegrationWorktree(
-				this.repoFor(missionId),
-				missionId,
-			)
-			// The integration worktree (lead cwd) is gone; drop the lead session handle.
-			this.activeSessions.delete(
-				this.sessionKey({ missionId, roleName: "mission_lead" }),
-			)
-			return
+			if (decision === "accept") {
+				await this.transitionMission(missionId, "completed")
+				await this.worktree.removeIntegrationWorktree(
+					this.repoFor(missionId),
+					missionId,
+				)
+				// The integration worktree (lead cwd) is gone; drop the lead session handle.
+				this.activeSessions.delete(
+					this.sessionKey({ missionId, roleName: "mission_lead" }),
+				)
+				return
+			}
+
+			// reject: mission back to in_progress; lead re-plans (04 D7).
+			await this.store.writeMission({
+				...mission,
+				status: "in_progress",
+				rejectionFeedback: feedback,
+			})
+			await this.transitionMission(missionId, "in_progress")
+			const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
+			const session = await this.acquireSession(lead)
+			const prompt =
+				`The mission was rejected at the Acceptance gate.\n` +
+				`Feedback: ${feedback ?? "(none provided)"}\n\n` +
+				`Re-plan: add new work items (via write_plan) to address the feedback. ` +
+				`Accepted items stay accepted (they are terminal); compose new items on top of them.`
+			await this.promptAndCollect(session, prompt)
+			await this.dispatchAndDrive(missionId)
+		} finally {
+			await this.driverLock.release(missionId)
 		}
-
-		// reject: mission back to in_progress; lead re-plans (04 D7).
-		await this.store.writeMission({
-			...mission,
-			status: "in_progress",
-			rejectionFeedback: feedback,
-		})
-		await this.transitionMission(missionId, "in_progress")
-		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
-		const session = await this.acquireSession(lead)
-		const prompt =
-			`The mission was rejected at the Acceptance gate.\n` +
-			`Feedback: ${feedback ?? "(none provided)"}\n\n` +
-			`Re-plan: add new work items (via write_plan) to address the feedback. ` +
-			`Accepted items stay accepted (they are terminal); compose new items on top of them.`
-		await this.promptAndCollect(session, prompt)
-		await this.dispatchAndDrive(missionId)
 	}
 
 	/**
@@ -414,35 +455,48 @@ export class Orchestrator {
 	 * (their next read of the now-deleted mission returns null and they exit).
 	 */
 	async deleteMission(missionId: string): Promise<void> {
-		const mission = await this.store.readMission(missionId)
-		const plan = await this.store.readPlan(missionId)
+		// Explicit host action: take over the drive so teardown can't race a
+		// live driver (in-flight drives detach on their next store read).
+		await this.acquireDriveLock(missionId, true)
+		try {
+			const mission = await this.store.readMission(missionId)
+			const plan = await this.store.readPlan(missionId)
 
-		if (mission) {
-			const repoPath = mission.repoPath
-			if (plan) {
-				for (const item of plan.items) {
-					await this.worktree.removeOwnerWorktree(repoPath, missionId, item.id)
+			if (mission) {
+				const repoPath = mission.repoPath
+				if (plan) {
+					for (const item of plan.items) {
+						await this.worktree.removeOwnerWorktree(
+							repoPath,
+							missionId,
+							item.id,
+						)
+					}
 				}
+				await this.worktree.removeIntegrationWorktree(repoPath, missionId)
+				await this.worktree.removeIntegrationBranch(repoPath, missionId)
 			}
-			await this.worktree.removeIntegrationWorktree(repoPath, missionId)
-			await this.worktree.removeIntegrationBranch(repoPath, missionId)
-		}
 
-		await this.store.deleteMission(missionId)
+			// Removes the mission dir — including the driver lock file itself;
+			// the release below then no-ops on the absent file.
+			await this.store.deleteMission(missionId)
 
-		this.repoByMission.delete(missionId)
-		this.planWriteLocks.delete(missionId)
-		for (const key of [...this.activeDrives.keys()]) {
-			if (key.startsWith(`${missionId}:`)) this.activeDrives.delete(key)
-		}
-		for (const key of [...this.helpRequestKeys]) {
-			if (key.startsWith(`${missionId}:`)) this.helpRequestKeys.delete(key)
-		}
-		for (const key of [...this.activeSessions.keys()]) {
-			if (key.startsWith(`${missionId}:`)) this.activeSessions.delete(key)
-		}
+			this.repoByMission.delete(missionId)
+			this.planWriteLocks.delete(missionId)
+			for (const key of [...this.activeDrives.keys()]) {
+				if (key.startsWith(`${missionId}:`)) this.activeDrives.delete(key)
+			}
+			for (const key of [...this.helpRequestKeys]) {
+				if (key.startsWith(`${missionId}:`)) this.helpRequestKeys.delete(key)
+			}
+			for (const key of [...this.activeSessions.keys()]) {
+				if (key.startsWith(`${missionId}:`)) this.activeSessions.delete(key)
+			}
 
-		this.bus.emit({ type: "mission-deleted", missionId })
+			this.bus.emit({ type: "mission-deleted", missionId })
+		} finally {
+			await this.driverLock.release(missionId)
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -455,8 +509,18 @@ export class Orchestrator {
 	 */
 	private async dispatchAndDrive(missionId: string): Promise<void> {
 		for (;;) {
+			// Another process force-took the driver lock mid-drive: stop now
+			// (abort in-flight turns). NoopDriverLock always reports "held by
+			// me", so in-process runs are unaffected.
+			if (await this.driveDisplaced(missionId)) {
+				this.abortMissionSessions(missionId)
+				return
+			}
 			const mission = await this.store.readMission(missionId)
 			if (!mission) return
+			// A terminal status (aborted / cancelled elsewhere) stops the drive.
+			if (mission.status === "completed" || mission.status === "cancelled")
+				return
 			const plan = await this.store.readPlan(missionId)
 			if (!plan) return
 			const items = plan.items
@@ -584,6 +648,12 @@ export class Orchestrator {
 		}
 
 		for (;;) {
+			// Another process took over the drive; stop before the next prompt.
+			if (await this.driveDisplaced(missionId)) {
+				this.activeSessions.get(this.sessionKey(owner))?.abort()
+				this.activeSessions.delete(this.sessionKey(owner))
+				return
+			}
 			let events: Event[] = []
 			try {
 				await this.sessionSemaphore.acquire()
@@ -1096,6 +1166,41 @@ export class Orchestrator {
 		if (!item)
 			throw new Error(`Work item ${itemId} not found in mission ${missionId}`)
 		return item
+	}
+
+	/** Abort every active session belonging to a mission (in-process). */
+	private abortMissionSessions(missionId: string): void {
+		for (const [key, session] of this.activeSessions.entries()) {
+			if (key.startsWith(`${missionId}:`)) {
+				session.abort()
+				this.activeSessions.delete(key)
+			}
+		}
+	}
+
+	/**
+	 * Acquire the mission's driver lock. `force` = explicit takeover (every
+	 * mutating / driving command). Returns the displaced holder (when this
+	 * call took the lock from a live driver) for host notification. Throws
+	 * when a live foreign holder refuses a non-force acquire.
+	 */
+	private async acquireDriveLock(
+		missionId: string,
+		force: boolean,
+	): Promise<DriverLockInfo | undefined> {
+		const result = await this.driverLock.acquire(missionId, { force })
+		if (!result.acquired) {
+			throw new Error(
+				`Mission ${missionId} is already driven by pid ${result.holder.pid} ` +
+					`(${result.holder.hostname}). Use /cc resume to take over.`,
+			)
+		}
+		return result.tookOverFrom
+	}
+
+	/** True iff another process has force-taken our drive lock mid-run. */
+	private async driveDisplaced(missionId: string): Promise<boolean> {
+		return !(await this.driverLock.isHeldByMe(missionId))
 	}
 
 	/** Serialize access to the lead session (reviews one item at a time — 04 D6). */
