@@ -14,7 +14,6 @@
 			"ask-question/index.ts",
 			"auto-title/index.ts",
 			"custom-footer/index.ts",
-			"diff/index.ts",
 			"custom-agents/index.ts",
 			"explain/index.ts",
 			"mini-task/index.ts",
@@ -32,9 +31,6 @@
 		"check": "biome check .",
 		"check:fix": "biome check . --fix",
 		"verify": "bun run check && bun run typecheck && bun test"
-	},
-	"dependencies": {
-		"@pierre/diffs": "^1.3.5"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.7",
