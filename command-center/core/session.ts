@@ -6,6 +6,8 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	type ExtensionAPI,
+	type ExtensionContext,
 	getAgentDir,
 	SessionManager,
 	type ToolDefinition,
@@ -258,13 +260,7 @@ export class PiSessionRunner implements SessionRunner {
 		}
 		session.subscribe(listener)
 
-		bus.emit({
-			type: "session-started",
-			missionId: who.missionId,
-			roleName: who.roleName,
-			...(who.workItemId !== undefined ? { workItemId: who.workItemId } : {}),
-			sessionId: session.sessionId,
-		})
+		emitSessionStarted(bus, who, session.sessionId)
 
 		return {
 			sessionId: session.sessionId,
@@ -273,6 +269,358 @@ export class PiSessionRunner implements SessionRunner {
 			abort: () => session.abort(),
 		}
 	}
+}
+
+/** Return the role identity currently attached to the visible Pi session. */
+export type VisibleRoleResolver = (
+	ctx: ExtensionContext,
+) => RoleIdentity | undefined | Promise<RoleIdentity | undefined>
+
+export interface PiVisibleLeadSessionRunnerOptions
+	extends PiSessionRunnerOptions {
+	/** The extension API bound to the user's current visible Pi session. */
+	pi: Pick<
+		ExtensionAPI,
+		| "on"
+		| "sendUserMessage"
+		| "registerTool"
+		| "getActiveTools"
+		| "setActiveTools"
+	>
+	/** The latest live extension context for the current visible session. */
+	getContext(): ExtensionContext | undefined
+	/** Maps the current visible session context to a Command Center role, if any. */
+	resolveVisibleRole: VisibleRoleResolver
+	/**
+	 * Hidden-session fallback. Defaults to PiSessionRunner, preserving the
+	 * headless path and keeping owners off the visible session.
+	 */
+	hiddenRunner?: SessionRunner
+}
+
+interface ActiveVisibleLead {
+	who: RoleIdentity
+	cwd: string
+	sessionId: string
+	systemPrompt: string
+	tools: ToolDefinition[]
+	toolNames: string[]
+}
+
+interface VisibleWaiter {
+	promise: Promise<void>
+	resolve(): void
+	reject(error: Error): void
+}
+
+interface VisibleSettledWait {
+	promise: Promise<void>
+	cancel(): void
+}
+
+const DOMAIN_TOOL_NAMES = new Set([
+	"define_mission",
+	"write_plan",
+	"update_memory",
+	"review_work_item",
+	"respond_to_help",
+	"request_human_input",
+	"report_status",
+])
+
+/**
+ * Hybrid runner for extension use: Mission Lead turns can run in the user's
+ * current visible Pi session, while owners (and unattached lead requests) keep
+ * using the SDK-backed hidden-session runner.
+ */
+export class PiVisibleLeadSessionRunner implements SessionRunner {
+	private readonly hidden: SessionRunner
+	private activeVisibleLead?: ActiveVisibleLead
+	private readonly registeredToolNames = new Set<string>()
+	private readonly waiters: VisibleWaiter[] = []
+
+	constructor(private readonly opts: PiVisibleLeadSessionRunnerOptions) {
+		this.hidden = opts.hiddenRunner ?? new PiSessionRunner(opts)
+		this.installEventBridges()
+	}
+
+	async startOrResume(
+		who: RoleIdentity,
+		cwd: string,
+		systemPrompt: string,
+		tools: ToolDefinition[],
+	): Promise<RoleSession> {
+		if (who.roleName !== "mission_lead") {
+			return this.hidden.startOrResume(who, cwd, systemPrompt, tools)
+		}
+
+		const ctx = this.opts.getContext()
+		const attached = ctx ? await this.opts.resolveVisibleRole(ctx) : undefined
+		if (!ctx || !sameRole(attached, who)) {
+			// Inert visible adapter: no prompt injection, no extension tool
+			// registration. The regular SDK path is still available.
+			return this.hidden.startOrResume(who, cwd, systemPrompt, tools)
+		}
+
+		const fullSystemPrompt = await buildSystemPrompt(
+			systemPrompt,
+			this.opts.store,
+		)(who)
+		const domainTools = tools.filter((tool) => DOMAIN_TOOL_NAMES.has(tool.name))
+		this.registerVisibleTools(domainTools)
+		this.activateVisibleTools(domainTools.map((tool) => tool.name))
+
+		const sessionId = ctx.sessionManager.getSessionId()
+		this.activeVisibleLead = {
+			who,
+			cwd,
+			sessionId,
+			systemPrompt: fullSystemPrompt,
+			tools: domainTools,
+			toolNames: domainTools.map((tool) => tool.name),
+		}
+
+		emitSessionStarted(this.opts.bus, who, sessionId)
+
+		return new VisibleLeadRoleSession(
+			who,
+			sessionId,
+			this.opts.pi,
+			() => this.opts.getContext(),
+			(ctx) => this.isActiveVisibleSession(who, sessionId, ctx),
+			() => this.waitForVisibleSettled(),
+		)
+	}
+
+	private installEventBridges(): void {
+		const pi = this.opts.pi
+		pi.on("session_start", async (_event, ctx) => {
+			const active = this.activeVisibleLead
+			if (!active) return
+			const stillActive = await this.isActiveVisibleSession(
+				active.who,
+				active.sessionId,
+				ctx,
+			)
+			if (!stillActive) {
+				this.detachVisibleLead(
+					"Visible Command Center lead session changed before the turn settled",
+				)
+			}
+		})
+
+		pi.on("session_before_switch", () => {
+			this.detachVisibleLead(
+				"Visible Command Center lead session switched before the turn settled",
+			)
+		})
+
+		pi.on("session_shutdown", () => {
+			this.detachVisibleLead(
+				"Visible Command Center lead session shut down before the turn settled",
+			)
+		})
+
+		pi.on("before_agent_start", async (_event, ctx) => {
+			const active = await this.matchingActiveLead(ctx)
+			if (!active) return undefined
+			this.activateVisibleTools(active.toolNames)
+			return { systemPrompt: active.systemPrompt }
+		})
+
+		const onRawSessionEvent = pi.on.bind(pi) as (
+			event: string,
+			handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>,
+		) => void
+		for (const eventName of [
+			"message_update",
+			"tool_execution_start",
+			"tool_execution_end",
+			"message_end",
+			"agent_end",
+		]) {
+			onRawSessionEvent(eventName, async (event, ctx) => {
+				const active = await this.matchingActiveLead(ctx)
+				if (!active) return
+				const normalized = normalizePiEvent(
+					active.who,
+					active.sessionId,
+					event as AgentSessionEvent,
+				)
+				if (normalized) this.opts.bus.emit(normalized)
+			})
+		}
+
+		pi.on("agent_settled", async (_event, ctx) => {
+			const active = await this.matchingActiveLead(ctx)
+			if (!active) return
+			const waiters = this.waiters.splice(0)
+			for (const waiter of waiters) waiter.resolve()
+		})
+	}
+
+	private async matchingActiveLead(
+		ctx: ExtensionContext,
+	): Promise<ActiveVisibleLead | undefined> {
+		const active = this.activeVisibleLead
+		if (!active) return undefined
+		const attached = await this.opts.resolveVisibleRole(ctx)
+		if (!sameRole(attached, active.who)) return undefined
+		if (ctx.sessionManager.getSessionId() !== active.sessionId) return undefined
+		return active
+	}
+
+	private async isActiveVisibleSession(
+		who: RoleIdentity,
+		sessionId: string,
+		ctx: ExtensionContext,
+	): Promise<boolean> {
+		const active = await this.matchingActiveLead(ctx)
+		return active?.sessionId === sessionId && sameRole(active.who, who)
+	}
+
+	private registerVisibleTools(tools: ToolDefinition[]): void {
+		for (const tool of tools) {
+			if (this.registeredToolNames.has(tool.name)) continue
+			this.opts.pi.registerTool(this.dynamicTool(tool.name, tool))
+			this.registeredToolNames.add(tool.name)
+		}
+	}
+
+	private dynamicTool(name: string, initial: ToolDefinition): ToolDefinition {
+		return {
+			...initial,
+			execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+				const active = await this.matchingActiveLead(ctx)
+				const tool = active?.tools.find((t) => t.name === name)
+				if (!tool) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Command Center tool ${name} is not active in this visible session.`,
+							},
+						],
+						isError: true,
+					}
+				}
+				return tool.execute(toolCallId, params, signal, onUpdate, ctx)
+			},
+		} as ToolDefinition
+	}
+
+	private activateVisibleTools(names: string[]): void {
+		const active = this.opts.pi.getActiveTools()
+		const next = [...active]
+		for (const name of names) {
+			if (!next.includes(name)) next.push(name)
+		}
+		if (next.length !== active.length) this.opts.pi.setActiveTools(next)
+	}
+
+	private deactivateVisibleTools(): void {
+		if (this.registeredToolNames.size === 0) return
+		const active = this.opts.pi.getActiveTools()
+		const next = active.filter((name) => !this.registeredToolNames.has(name))
+		if (next.length !== active.length) this.opts.pi.setActiveTools(next)
+	}
+
+	private detachVisibleLead(reason: string): void {
+		this.deactivateVisibleTools()
+		this.activeVisibleLead = undefined
+		const error = new Error(reason)
+		const waiters = this.waiters.splice(0)
+		for (const waiter of waiters) waiter.reject(error)
+	}
+
+	private waitForVisibleSettled(): VisibleSettledWait {
+		let resolveWaiter!: () => void
+		let rejectWaiter!: (error: Error) => void
+		const promise = new Promise<void>((resolve, reject) => {
+			resolveWaiter = resolve
+			rejectWaiter = (error) => reject(error)
+		})
+		const waiter: VisibleWaiter = {
+			promise,
+			resolve: resolveWaiter,
+			reject: rejectWaiter,
+		}
+		this.waiters.push(waiter)
+		return {
+			promise,
+			cancel: () => {
+				const index = this.waiters.indexOf(waiter)
+				if (index >= 0) this.waiters.splice(index, 1)
+			},
+		}
+	}
+}
+
+class VisibleLeadRoleSession implements RoleSession {
+	constructor(
+		private readonly who: RoleIdentity,
+		public readonly sessionId: string,
+		private readonly pi: Pick<ExtensionAPI, "sendUserMessage">,
+		private readonly getContext: () => ExtensionContext | undefined,
+		private readonly isActiveVisibleSession: (
+			ctx: ExtensionContext,
+		) => Promise<boolean>,
+		private readonly waitForSettled: () => VisibleSettledWait,
+	) {}
+
+	async prompt(text: string): Promise<void> {
+		const ctx = this.getContext()
+		if (!ctx || !(await this.isActiveVisibleSession(ctx))) {
+			throw new Error(
+				`Visible session is no longer attached to Mission ${this.who.missionId}'s acquired lead session`,
+			)
+		}
+		const settled = this.waitForSettled()
+		try {
+			this.pi.sendUserMessage(
+				text,
+				ctx.isIdle() ? undefined : { deliverAs: "followUp" },
+			)
+		} catch (error) {
+			settled.cancel()
+			throw error
+		}
+		await settled.promise
+	}
+
+	isStreaming(): boolean {
+		return !(this.getContext()?.isIdle() ?? true)
+	}
+
+	abort(): void {
+		this.getContext()?.abort()
+	}
+}
+
+function emitSessionStarted(
+	bus: EventBus,
+	who: RoleIdentity,
+	sessionId: string,
+): void {
+	bus.emit({
+		type: "session-started",
+		missionId: who.missionId,
+		roleName: who.roleName,
+		...(who.workItemId !== undefined ? { workItemId: who.workItemId } : {}),
+		sessionId,
+	})
+}
+
+function sameRole(
+	a: RoleIdentity | undefined,
+	b: RoleIdentity | undefined,
+): boolean {
+	if (!a || !b) return false
+	return (
+		a.missionId === b.missionId &&
+		a.roleName === b.roleName &&
+		a.workItemId === b.workItemId
+	)
 }
 
 // ---------------------------------------------------------------------------
