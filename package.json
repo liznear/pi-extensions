@@ -37,8 +37,11 @@
 		"@pierre/diffs": "^1.2.10"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.5.6",
 		"@earendil-works/pi-coding-agent": "*",
 		"@earendil-works/pi-tui": "*",
-		"typebox": "*"
+		"@types/bun": "latest",
+		"typebox": "*",
+		"typescript": "^5"
 	}
 }
