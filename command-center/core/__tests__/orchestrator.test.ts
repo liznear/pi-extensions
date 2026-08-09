@@ -712,6 +712,113 @@ describe("Orchestrator — visible lead event bridge", () => {
 		expect(wt.calls).toContain(`acceptMerge:${missionId}:1`)
 	})
 
+	test("review rework then accept flows through the visible lead path", async () => {
+		const store = new InMemoryStore()
+		const wt = new FakeWorktreeProvider()
+		const ctx = visibleContext()
+		const pi = new ScriptedVisiblePi(ctx)
+		const missionId = "visible1"
+		const busEvents: Event[] = []
+		let reviewTurn = 0
+
+		const orch = new Orchestrator({
+			store,
+			worktreeProvider: wt,
+			sessionRunner: (bus, store) => {
+				bus.subscribe((e) => busEvents.push(e))
+				return new PiVisibleLeadSessionRunner({
+					bus,
+					store,
+					pi: pi as unknown as VisiblePiApi,
+					getContext: () => ctx,
+					resolveVisibleRole: () => ({
+						missionId,
+						roleName: "mission_lead",
+					}),
+					hiddenRunner: new FakeSessionRunner(bus, {
+						onPrompt: async (session, text) => {
+							if (session.who.roleName !== "work_item_owner") return
+							if (text.includes("sent back for rework")) {
+								expect(text).toContain("Add regression coverage")
+							}
+							await simulateRequestReview(
+								bus,
+								missionId,
+								session.who.workItemId!,
+								text.includes("sent back for rework")
+									? "fixed after visible rework"
+									: "visible review ready",
+							)
+						},
+					}),
+				})
+			},
+		})
+
+		await store.writeMission({
+			id: missionId,
+			repoPath: "/test-repo",
+			title: "Visible Rework",
+			description: "exercise visible rework",
+			acceptanceCriteria: [],
+			status: "pending",
+		})
+		await store.writePlan(missionId, {
+			items: [
+				{
+					id: 1,
+					title: "Item A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+		await orch.registerMission(missionId)
+
+		pi.onSend = async (text, toolCtx) => {
+			if (text.includes("ready for review")) {
+				reviewTurn++
+				await pi.executeTool(
+					"review_work_item",
+					reviewTurn === 1
+						? {
+								workItemId: 1,
+								decision: "rework",
+								feedback: "Add regression coverage",
+							}
+						: { workItemId: 1, decision: "accept" },
+					toolCtx,
+				)
+			}
+			await pi.settle(toolCtx)
+		}
+
+		await orch.launchMission(missionId)
+		await waitFor(
+			async () =>
+				(await store.readMission(missionId))?.status === "ready_for_acceptance",
+		)
+
+		expect(reviewTurn).toBe(2)
+		expect((await store.readPlan(missionId))?.items[0]?.status).toBe("accepted")
+		expect(
+			busEvents.filter(
+				(e) =>
+					e.type === "tool-call-ended" && e.toolName === "review_work_item",
+			),
+		).toHaveLength(2)
+		expect(
+			busEvents.some(
+				(e) =>
+					e.type === "work-item-status-changed" &&
+					e.workItemId === 1 &&
+					e.to === "in_progress",
+			),
+		).toBe(true)
+		expect(wt.calls).toContain(`acceptMerge:${missionId}:1`)
+	})
+
 	test("respond_to_help details from the visible lead reach triage before owner continuation", async () => {
 		const store = new InMemoryStore()
 		const wt = new FakeWorktreeProvider()
@@ -1436,6 +1543,74 @@ describe("Orchestrator — driver lock (multi-process)", () => {
 		expect((await store.readPlan("m1"))?.items[0]?.status).toBe("pending")
 		expect(gated.isMissionDriveParked("m1")).toBe(true)
 		expect(lock.releaseCalls).toBe(1)
+	})
+
+	test("an attach-parked drive is cleared and restarted by an explicit resume", async () => {
+		const lock = new RecordingLock()
+		const store = new InMemoryStore()
+		const wt = new FakeWorktreeProvider()
+		let attachedToLead = false
+		const gated = new Orchestrator({
+			store,
+			worktreeProvider: wt,
+			driverLock: lock,
+			canDriveMission: () => attachedToLead,
+			sessionRunner: (bus) =>
+				new FakeSessionRunner(bus, {
+					onPrompt: async (session) => {
+						if (session.who.roleName === "work_item_owner") {
+							await simulateRequestReview(
+								bus,
+								session.who.missionId,
+								session.who.workItemId!,
+								"done after re-attach",
+							)
+							return
+						}
+						await simulateReviewWorkItem(
+							store,
+							bus,
+							wt,
+							session.who.missionId,
+							1,
+							"accept",
+						)
+					},
+				}),
+		})
+
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await store.writePlan("m1", {
+			items: [
+				{
+					id: 1,
+					title: "A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+
+		await gated.resumeMission("m1")
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe("pending")
+		expect(gated.isMissionDriveParked("m1")).toBe(true)
+
+		attachedToLead = true
+		await gated.resumeMission("m1", { force: false })
+
+		expect(gated.isMissionDriveParked("m1")).toBe(false)
+		expect(lock.acquireCalls).toEqual([{ force: true }, { force: false }])
+		expect(lock.releaseCalls).toBe(2)
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe("accepted")
+		expect((await store.readMission("m1"))?.status).toBe("ready_for_acceptance")
 	})
 
 	test("parkMissionDrive aborts active sessions and stops before lead review", async () => {
