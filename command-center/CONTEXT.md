@@ -117,6 +117,15 @@ outstanding per item. Not persisted (re-derived on resume); the durable "waiting
 human" signal, if the lead escalates, is the Human Input Request, not the Help Request.
 _Avoid_: escalation, blocker, ticket
 
+**Launch**:
+An explicit transition of a Mission from `pending` to `in_progress` that starts its
+drive. A Mission created by `/cc new` stays `pending` while the human and the Mission
+Lead define it and write the Plan together in the lead's interactive session; the human
+runs `/cc launch` when the Plan is ready. Only `launch` and `resume` start a drive — there
+is no auto-resume (a Plan written in the interactive session never starts a drive by
+itself).
+_Avoid_: start, kick off
+
 **Run**:
 One execution of the Orchestrator, from process start to stop. A Mission spans many Runs
 across restarts. A Run may drive a Mission only while it holds that Mission's Driver Lock;
@@ -128,17 +137,19 @@ The cross-process protocol that guarantees a Mission has at most one driver at a
 a per-Mission advisory lock file (`<storeRoot>/missions/<id>/driver.lock`) recording the
 driving Run's pid + hostname. A Run acquires the lock before any drive entry point and
 releases it when the drive parks or the Mission terminates. Explicit commands
-(`/cc start` / `resume` / `reply` / `accept` / `reject` / `abort` / `delete`) take the
+(`/cc launch` / `resume` / `reply` / `accept` / `reject` / `abort` / `delete`) take the
 lock over; a displaced driver stops at its next loop iteration. A lock whose holder's pid
 is dead (crash) is stale and reclaimable. Read-only commands (`list`, `attach`) don't
-drive, but `attach` refuses a Mission another live process is driving.
+drive, but `attach` refuses a Mission another live process is driving. `/cc new` opens
+the lead's session for interactive definition without driving, so it takes no lock.
 _Avoid_: mutex, semaphore, lease
 
 **Resume**:
 The act of a Run reconstructing the Orchestrator's in-flight view from persisted state and
 re-entering the dispatch/plan-review loop — always explicit, never automatic: a Run
-resumes because a host called a drive method (`/cc resume`, a human-input reply, an
-accept/reject decision), not because a session started. Loop position is _derived_ from
-the persisted Mission/Plan (the Work-Item status machine is the checkpoint), never stored
-or replayed; a turn interrupted by a crash is re-driven, not replayed.
+resumes because a host called a drive method (`/cc launch`, `/cc resume`, a human-input
+reply, an accept/reject decision), not because a session started. Loop position is
+_derived_ from the persisted Mission/Plan (the Work-Item status machine is the
+checkpoint), never stored or replayed; a turn interrupted by a crash is re-driven, not
+replayed.
 _Avoid_: restart (a fresh Run with no carried-over state), recover, boot

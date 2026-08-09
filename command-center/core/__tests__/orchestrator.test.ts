@@ -326,6 +326,94 @@ describe("Orchestrator — defineMission", () => {
 	})
 })
 
+describe("Orchestrator — createMission (interactive definition)", () => {
+	test("creates a pending stub + worktree + lead session with a framing prompt, and drives nothing", async () => {
+		const { orch, runner, wt, store } = makeOrch({})
+		const events = collect(orch)
+
+		const missionId = await orch.createMission({ repoPath: "/test-repo" })
+
+		expect(missionId).toMatch(/^[0-9a-z]{8}$/)
+		// Pending stub: the mission is NOT launched and nothing is driven.
+		expect((await store.readMission(missionId))?.status).toBe("pending")
+		expect(wt.calls).toContain(`createIntegration:${missionId}`)
+		expect(wt.calls.filter((c) => c.startsWith("createOwner:"))).toEqual([])
+
+		// The lead session was acquired and got the interactive framing prompt.
+		const lead = runner.sessions.get(`${missionId}:mission_lead:_`)
+		expect(lead).toBeDefined()
+		expect(lead!.prompts).toHaveLength(1)
+		expect(lead!.prompts[0]).toContain("Mission Lead for Mission")
+		// No mission-defined / plan-written — the lead only opened the dialogue.
+		expect(lastEvent(events, "mission-defined")).toBeUndefined()
+		expect(lastEvent(events, "plan-written")).toBeUndefined()
+	})
+})
+
+describe("Orchestrator — launchMission", () => {
+	/** Poll the store until `cond` holds (the drive is fire-and-forget). */
+	async function waitFor(
+		cond: () => Promise<boolean>,
+		timeoutMs = 2000,
+	): Promise<void> {
+		const deadline = Date.now() + timeoutMs
+		while (Date.now() < deadline) {
+			if (await cond()) return
+			await new Promise((r) => setTimeout(r, 10))
+		}
+		throw new Error("timed out waiting for the background drive")
+	}
+
+	test("launches a pending mission (pending → in_progress) and drives its plan in the background", async () => {
+		const { orch, store, bus, wt } = makeOrch({})
+		const missionId = await orch.createMission({ repoPath: "/test-repo" })
+
+		// Simulate the interactive planning phase: the lead writes the plan.
+		await simulateWritePlan(store, bus, missionId, {
+			items: [{ title: "Item A", description: "Do A", dependencies: [] }],
+		})
+
+		await orch.launchMission(missionId)
+
+		// The transition is synchronous; the drive runs in the background.
+		expect((await store.readMission(missionId))?.status).toBe("in_progress")
+		await waitFor(
+			async () =>
+				(await store.readMission(missionId))?.status === "ready_for_acceptance",
+		)
+		expect((await store.readPlan(missionId))?.items[0]?.status).toBe("accepted")
+		expect(wt.calls).toContain(`createOwner:${missionId}:1`)
+	})
+
+	test("refuses to launch an already-launched (in_progress) mission", async () => {
+		const { orch, store } = makeOrch({})
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await expect(orch.launchMission("m1")).rejects.toThrow(/not pending/)
+	})
+
+	test("refuses to launch a mission with no plan yet", async () => {
+		const { orch } = makeOrch({})
+		const missionId = await orch.createMission({ repoPath: "/test-repo" })
+		await expect(orch.launchMission(missionId)).rejects.toThrow(
+			/has no plan yet/,
+		)
+	})
+
+	test("refuses to launch an unknown mission", async () => {
+		const { orch } = makeOrch({})
+		await expect(orch.launchMission("ghost")).rejects.toThrow(
+			/Unknown mission: ghost/,
+		)
+	})
+})
+
 describe("Orchestrator — provisioning failure leaves no orphan", () => {
 	test("defineMission rejects and persists nothing when the worktree can't be provisioned", async () => {
 		const store = new InMemoryStore()

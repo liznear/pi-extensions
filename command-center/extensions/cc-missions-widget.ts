@@ -163,7 +163,7 @@ export function isInsideMissionWorktrees(
 /**
  * Missions whose repo source path equals `cwd` — the ones to pin above the
  * editor in a session opened in that repo. Comparison is on normalized
- * absolute paths; both `repoPath` (captured at /cc start) and `ctx.cwd` come
+ * absolute paths; both `repoPath` (captured at /cc new) and `ctx.cwd` come
  * from the same pi process (`process.cwd()`), so plain equality holds.
  *
  * Result is ordered for display: active statuses first, most recently

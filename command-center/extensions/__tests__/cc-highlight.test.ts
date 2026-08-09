@@ -37,9 +37,12 @@ describe("highlightCcLine — /cc command lines", () => {
 		)
 	})
 
-	test("start/list do not color a second token (free-form argument)", () => {
-		expect(highlightCcLine("/cc start add a test", fg)).toBe(
-			"<syntaxKeyword>/cc</syntaxKeyword> <syntaxFunction>start</syntaxFunction> add a test",
+	test("new/list/launch/resume do not color a second token (no-argument subcommands)", () => {
+		expect(highlightCcLine("/cc new add a test", fg)).toBe(
+			"<syntaxKeyword>/cc</syntaxKeyword> <syntaxFunction>new</syntaxFunction> add a test",
+		)
+		expect(highlightCcLine("/cc resume any token", fg)).toBe(
+			"<syntaxKeyword>/cc</syntaxKeyword> <syntaxFunction>resume</syntaxFunction> any token",
 		)
 	})
 

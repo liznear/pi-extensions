@@ -47,11 +47,12 @@ describe("ccCompletionForCursor — subcommand position", () => {
 		expect(c?.prefix).toBe("")
 		expect(c?.items.map((i) => i.value)).toEqual([
 			"list",
-			"start",
+			"new",
+			"launch",
+			"resume",
 			"abort",
 			"delete",
 			"attach",
-			"resume",
 			"reply",
 			"accept",
 			"reject",
@@ -103,7 +104,6 @@ describe("ccCompletionForCursor — mission id position", () => {
 			"abort",
 			"delete",
 			"attach",
-			"resume",
 			"reply",
 			"accept",
 			"reject",
@@ -145,9 +145,11 @@ describe("ccCompletionForCursor — mission id position", () => {
 		expect(ccCompletionForCursor("/cc abort nope", MISSIONS)).toBeNull()
 	})
 
-	test("list and start do not complete mission ids", () => {
+	test("list/new/launch/resume do not complete mission ids", () => {
 		expect(ccCompletionForCursor("/cc list ", MISSIONS)).toBeNull()
-		expect(ccCompletionForCursor("/cc start ", MISSIONS)).toBeNull()
+		expect(ccCompletionForCursor("/cc new ", MISSIONS)).toBeNull()
+		expect(ccCompletionForCursor("/cc launch ", MISSIONS)).toBeNull()
+		expect(ccCompletionForCursor("/cc resume ", MISSIONS)).toBeNull()
 	})
 
 	test("extra text after the mission id yields null", () => {

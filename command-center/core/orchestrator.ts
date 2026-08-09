@@ -382,7 +382,10 @@ export class Orchestrator {
 			title: "(New Mission)",
 			description,
 			acceptanceCriteria: [],
-			status: "in_progress",
+			// Stubs are `pending` until explicitly launched (driveDefinedMission /
+			// launchMission transition to in_progress — the lead must not start
+			// work on a mission the human hasn't launched).
+			status: "pending",
 		})
 		return missionId
 	}
@@ -395,11 +398,95 @@ export class Orchestrator {
 		// (a live-holder refusal here would be a pathological id clash).
 		await this.acquireDriveLock(missionId, false)
 		try {
+			// The stub is created `pending` (an interactive mission stays pending
+			// until the host launches it); a library-driven mission leaves pending
+			// here so its drive runs under the in_progress lifecycle.
+			await this.transitionMission(missionId, "in_progress")
 			const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 			const session = await this.acquireSession(lead)
 			await this.promptAndCollect(session, this.missionStartPrompt(description))
 
 			// Drive the plan to completion.
+			await this.dispatchAndDrive(missionId)
+		} finally {
+			await this.driverLock.release(missionId)
+		}
+	}
+
+	/**
+	 * Create a mission STUB for interactive definition: provision the
+	 * integration worktree, persist the `pending` stub, and open the Mission
+	 * Lead's session in that worktree with an opening framing prompt. No drive
+	 * runs — the human takes over the lead session to define the mission and
+	 * write the plan together; execution starts only via an explicit
+	 * `launchMission` (there is no auto-drive on plan-write).
+	 *
+	 * Returns once the stub + lead session are ready. The framing prompt is
+	 * fire-and-forget: its turn flushes the session's thread file, so a host
+	 * can attach to the lead session immediately after.
+	 */
+	async createMission(opts: { repoPath: string }): Promise<string> {
+		const missionId = await this.prepareMission("", opts)
+		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
+		const session = await this.acquireSession(lead)
+		void session
+			.prompt(this.interactiveStartPrompt(missionId))
+			.catch((error) => {
+				console.error(
+					`Failed to prompt Mission Lead for mission ${missionId}:`,
+					error,
+				)
+			})
+		return missionId
+	}
+
+	/**
+	 * Launch a mission created by createMission: `pending` → `in_progress` and
+	 * start driving its plan in the background (the extension's /cc launch).
+	 *
+	 * Guards: the mission must be `pending` (a launched mission resumes via
+	 * `resumeMission`, never re-launches) and must already have a plan (the
+	 * interactive definition phase writes it; launching an unplanned mission
+	 * would start an empty drive that parks instantly with nothing to
+	 * dispatch). A failed background drive surfaces via `onDriveError`.
+	 */
+	async launchMission(
+		missionId: string,
+		opts: {
+			onDriveError?: (missionId: string, error: Error) => void
+		} = {},
+	): Promise<void> {
+		const mission = await this.store.readMission(missionId)
+		if (!mission) throw new Error(`Unknown mission: ${missionId}`)
+		if (mission.status !== "pending") {
+			throw new Error(
+				`Mission ${missionId} is ${mission.status}, not pending. ` +
+					`Use /cc resume to resume an in-progress mission.`,
+			)
+		}
+		const plan = await this.store.readPlan(missionId)
+		if (!plan || plan.items.length === 0) {
+			throw new Error(
+				`Mission ${missionId} has no plan yet. Define the mission and write ` +
+					`the plan with the Mission Lead before launching.`,
+			)
+		}
+		await this.transitionMission(missionId, "in_progress")
+		void this.driveMission(missionId).catch((error) => {
+			const err = error instanceof Error ? error : new Error(String(error))
+			console.error(`Mission ${missionId} drive failed:`, err)
+			opts.onDriveError?.(missionId, err)
+		})
+	}
+
+	/**
+	 * Drive a mission's plan to its next park point under the driver lock
+	 * (callers fire this without awaiting — a long-running drive must not
+	 * block the host).
+	 */
+	private async driveMission(missionId: string): Promise<void> {
+		await this.acquireDriveLock(missionId, false)
+		try {
 			await this.dispatchAndDrive(missionId)
 		} finally {
 			await this.driverLock.release(missionId)
@@ -1058,6 +1145,27 @@ export class Orchestrator {
 
 	private missionStartPrompt(description: string): string {
 		return `A new mission has been assigned to you.\n\n${description}\n\nDefine the mission (define_mission) and plan it as a DAG of work items (write_plan).`
+	}
+
+	/**
+	 * The lead's opening prompt in an interactive definition session (created
+	 * by createMission / the extension's /cc new). Unlike missionStartPrompt,
+	 * this frames a COLLABORATIVE session: the human defines the mission and
+	 * the plan together with the lead; execution starts only when the human
+	 * launches the mission.
+	 */
+	private interactiveStartPrompt(missionId: string): string {
+		return (
+			`You are the Mission Lead for Mission ${missionId}. The human operator ` +
+			`is here in this session to define a new mission with you.\n\n` +
+			`Greet them and ask what they want to build. Work with them to clarify ` +
+			`the goals, constraints, and acceptance criteria — do NOT call ` +
+			`define_mission until you and the human agree on what the mission ` +
+			`should accomplish. Then create the Plan together, iterating with ` +
+			`write_plan as needed.\n\n` +
+			`Execution does not start from this session: once the plan is ready, ` +
+			`the human launches the mission and owners take over the work items.`
+		)
 	}
 
 	private async workItemPrompt(

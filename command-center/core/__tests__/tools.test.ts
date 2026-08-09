@@ -51,7 +51,7 @@ function capture(bus: EventBus): Event[] {
 }
 
 describe("define_mission tool", () => {
-	test("writes mission with the closure id (status in_progress) and emits mission-defined", async () => {
+	test("writes mission with the closure id (status pending when no stub exists) and emits mission-defined", async () => {
 		const store = new InMemoryStore()
 		const bus = new EventBus()
 		const events = capture(bus)
@@ -65,9 +65,40 @@ describe("define_mission tool", () => {
 		const mission = (await store.readMission("7k3a9fqa"))!
 		expect(mission.id).toBe("7k3a9fqa") // from closure, not agent
 		expect(mission.title).toBe("T")
-		expect(mission.status).toBe("in_progress")
+		// define_mission preserves the lifecycle status: with no stub the mission
+		// is `pending` (launch transitions to in_progress).
+		expect(mission.status).toBe("pending")
 		expect(res.details.mission.id).toBe("7k3a9fqa")
 		expect(events.filter((e) => e.type === "mission-defined")).toHaveLength(1)
+	})
+
+	test("preserves an existing mission's status (stub stays pending until launch)", async () => {
+		const store = new InMemoryStore()
+		const bus = new EventBus()
+		await store.writeMission({
+			id: "7k3a9fqa",
+			repoPath: "/test-repo",
+			title: "(New Mission)",
+			description: "",
+			acceptanceCriteria: [],
+			status: "pending",
+		})
+		const tool = createDefineMissionTool(store, bus, lead, "/test-repo")
+		await run(tool, {
+			title: "T",
+			description: "D",
+			acceptanceCriteria: ["c1"],
+		})
+		expect((await store.readMission("7k3a9fqa"))?.status).toBe("pending")
+
+		// And an already-launched mission keeps in_progress across redefinitions.
+		await store.writeMissionStatus("7k3a9fqa", "in_progress")
+		await run(tool, {
+			title: "T2",
+			description: "D2",
+			acceptanceCriteria: ["c2"],
+		})
+		expect((await store.readMission("7k3a9fqa"))?.status).toBe("in_progress")
 	})
 })
 

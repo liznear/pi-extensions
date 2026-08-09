@@ -118,7 +118,7 @@ async function resolveAttachTarget(
 	return undefined
 }
 
-/** Switch the UI to a session thread file (shared by /cc attach and /cc start). */
+/** Switch the UI to a session thread file (shared by /cc attach and /cc new). */
 async function attachToPath(
 	ctx: ExtensionCommandContext,
 	path: string,
@@ -137,7 +137,7 @@ async function attachToPath(
 
 /**
  * Switch the UI to a role's session (attach semantics shared by `/cc attach`
- * and the auto-attach after `/cc start`).
+ * and the auto-attach after `/cc new`).
  */
 async function attachToRole(
 	ctx: ExtensionCommandContext,
@@ -160,6 +160,31 @@ async function attachToRole(
 		return
 	}
 	await attachToPath(ctx, target.path, missionId, roleName)
+}
+
+/**
+ * The mission the current session is attached to — the gating check for the
+ * no-argument /cc launch and /cc resume: the cwd must be inside the mission's
+ * worktrees dir (`<repo>/.command-center/worktrees/<id>/…` — the lead's
+ * integration session or an owner's session). A session merely opened in the
+ * repo root is NOT attached. On a miss, notifies the user and returns
+ * undefined.
+ */
+async function requireAttachedMission(
+	ctx: ExtensionCommandContext,
+	orch: Orchestrator,
+): Promise<string | undefined> {
+	const missions = await orch.store.listMissions()
+	const missionId = missions.find((m) =>
+		isInsideMissionWorktrees(m, ctx.cwd),
+	)?.id
+	if (!missionId) {
+		await ctx.ui.notify(
+			"You are not attached to a mission. Run /cc attach <missionId> or /cc new first.",
+			"error",
+		)
+	}
+	return missionId
 }
 
 /**
@@ -311,8 +336,8 @@ export default function (pi: ExtensionAPI) {
 			})
 
 			// NO auto-resume: missions are driven only by explicit /cc commands
-			// (start / resume / reply / accept / reject / abort / delete), each
-			// of which acquires the mission's driver lock.
+			// (new / launch / resume / reply / accept / reject / abort / delete),
+			// each of which acquires the mission's driver lock.
 		}
 
 		// The widget targets the CURRENT session: refresh the context on every
@@ -379,34 +404,42 @@ export default function (pi: ExtensionAPI) {
 				// TODO: we can't do plain logging, we must output to UI
 				// actually we can use ctx.ui.notify or add a system message
 				await ctx.ui.notify(msg, "info")
-			} else if (cmd === "start") {
-				// /cc start <description>
-				const repoPath = ctx.cwd // the extension runs in the main workspace
-				const description = argsList.slice(1).join(" ")
-				if (!description) {
-					await ctx.ui.notify("Usage: /cc start <description>", "error")
-					return
-				}
-				// Queue the mission so the command returns immediately; the
-				// orchestrator drives the lead in the background. A failed drive
-				// (session creation / worktree / model errors) surfaces via
-				// onDriveError — otherwise it'd read as a confusing
-				// "No active session found" later.
-				const missionId = await orch.queueMission(description, {
-					repoPath,
-					onDriveError: (id, error) => {
-						ctx.ui.notify(
-							`Mission ${id} failed to start: ${error.message}`,
-							"error",
-						)
-					},
-				})
-				await ctx.ui.notify(`Started mission ${missionId}`, "info")
-				// Automatically switch to the new mission's lead session. The
-				// lead's thread file is written lazily (only once its first model
-				// turn flushes entries), so resolveAttachTarget waits for it
-				// rather than attaching to an in-memory-only session.
+			} else if (cmd === "new") {
+				// /cc new — create a mission stub + integration worktree and open
+				// the Mission Lead's session in it, then switch to that session:
+				// the human works with the lead interactively to define the
+				// mission and write the plan. No drive starts; execution begins
+				// only on /cc launch.
+				const missionId = await orch.createMission({ repoPath: ctx.cwd })
+				await ctx.ui.notify(
+					`Mission ${missionId} created — define it with the Mission Lead`,
+					"info",
+				)
+				// Switch to the lead's session. The lead's thread file is written
+				// lazily (only once its opening turn flushes entries), so
+				// resolveAttachTarget waits for it rather than attaching to an
+				// in-memory-only session.
 				await attachToRole(ctx, orch, missionId, "mission_lead")
+			} else if (cmd === "launch") {
+				// /cc launch — start the mission the current session is attached
+				// to (pending → in_progress, then drive its plan in the
+				// background). Only allowed from inside the mission's worktrees.
+				const missionId = await requireAttachedMission(ctx, orch)
+				if (!missionId) return
+				try {
+					await orch.launchMission(missionId, {
+						onDriveError: (id, error) => {
+							ctx.ui.notify(
+								`Mission ${id} failed to drive: ${error.message}`,
+								"error",
+							)
+						},
+					})
+					await ctx.ui.notify(`Launched mission ${missionId}`, "info")
+				} catch (error) {
+					const err = error instanceof Error ? error : new Error(String(error))
+					await ctx.ui.notify(err.message, "error")
+				}
 			} else if (cmd === "abort") {
 				const missionId = argsList[1]
 				const workItemId = argsList[2]
@@ -468,18 +501,26 @@ export default function (pi: ExtensionAPI) {
 
 				await attachToRole(ctx, orch, missionId, roleName, workItemId)
 			} else if (cmd === "resume") {
-				const targetMissionId = argsList[1]
-				if (!targetMissionId) {
-					await ctx.ui.notify("Usage: /cc resume <missionId>", "error")
+				// /cc resume — re-drive the mission the current session is
+				// attached to. Explicit takeover: force-acquires the driver lock;
+				// a displaced driver in another process stops at its next loop
+				// iteration. Only allowed from inside the mission's worktrees,
+				// and only for an already-launched (in_progress) mission.
+				const missionId = await requireAttachedMission(ctx, orch)
+				if (!missionId) return
+				const mission = await orch.store.readMission(missionId)
+				if (mission?.status !== "in_progress") {
+					await ctx.ui.notify(
+						`Mission ${missionId} is ${mission?.status ?? "unknown"}, not in_progress. Use /cc launch to start it.`,
+						"error",
+					)
 					return
 				}
-				// Explicit takeover: force-acquires the driver lock; a displaced
-				// driver in another process stops at its next loop iteration.
-				const tookOverFrom = await orch.resumeMission(targetMissionId)
+				const tookOverFrom = await orch.resumeMission(missionId)
 				await ctx.ui.notify(
 					tookOverFrom
-						? `Resumed mission ${targetMissionId} (took over from pid ${tookOverFrom.pid})`
-						: `Resumed mission ${targetMissionId}`,
+						? `Resumed mission ${missionId} (took over from pid ${tookOverFrom.pid})`
+						: `Resumed mission ${missionId}`,
 					"info",
 				)
 			} else if (cmd === "reply") {
@@ -519,8 +560,8 @@ export default function (pi: ExtensionAPI) {
 				await ctx.ui.notify(`Unknown command: /cc ${cmd}`, "error")
 			}
 
-			// Mission state may have changed (start/delete/abort/accept/…). The
-			// orchestrator emits events for background drives, but /cc start's
+			// Mission state may have changed (new/launch/delete/abort/accept/…). The
+			// orchestrator emits events for background drives, but /cc new's
 			// stub write emits none — refresh unconditionally.
 			void refreshMissionsWidget()
 		},

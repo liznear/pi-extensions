@@ -28,7 +28,6 @@ const MISSION_ID_SUBCOMMANDS: ReadonlySet<string> = new Set([
 	"abort",
 	"delete",
 	"attach",
-	"resume",
 	"reply",
 	"accept",
 	"reject",

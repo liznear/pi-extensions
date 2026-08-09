@@ -24,10 +24,22 @@ interface Subcommand {
 	usage: string
 }
 
-/** The nine `/cc` subcommands, in the order they appear in cc.ts's handler. */
+/** The ten `/cc` subcommands, in the order they appear in cc.ts's handler. */
 const SUBCOMMANDS: readonly Subcommand[] = [
 	{ name: "list", usage: "List missions" },
-	{ name: "start", usage: "Start a mission: /cc start <description>" },
+	{
+		name: "new",
+		usage:
+			"Create a mission and define it interactively with the Mission Lead: /cc new",
+	},
+	{
+		name: "launch",
+		usage: "Start the attached mission (pending → in_progress): /cc launch",
+	},
+	{
+		name: "resume",
+		usage: "Resume the attached in-progress mission: /cc resume",
+	},
 	{
 		name: "abort",
 		usage: "Abort a mission or work item: /cc abort <missionId> [workItemId]",
@@ -40,7 +52,6 @@ const SUBCOMMANDS: readonly Subcommand[] = [
 		name: "attach",
 		usage: "Attach to a mission session: /cc attach <missionId> [workItemId]",
 	},
-	{ name: "resume", usage: "Resume a mission: /cc resume <missionId>" },
 	{
 		name: "reply",
 		usage:
@@ -53,12 +64,15 @@ const SUBCOMMANDS: readonly Subcommand[] = [
 	},
 ]
 
-/** Subcommands whose second token is a mission id (list/start take none). */
-const MISSION_ID_SUBCOMMANDS: ReadonlySet<string> = new Set(
-	SUBCOMMANDS.filter((s) => s.name !== "list" && s.name !== "start").map(
-		(s) => s.name,
-	),
-)
+/** Subcommands whose second token is a mission id (list/new/launch/resume take none). */
+const MISSION_ID_SUBCOMMANDS: ReadonlySet<string> = new Set([
+	"abort",
+	"delete",
+	"attach",
+	"reply",
+	"accept",
+	"reject",
+])
 
 /** A completion: `prefix` is the exact text before the cursor to replace. */
 export interface CcCompletion {
