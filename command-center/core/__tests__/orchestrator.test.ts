@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test"
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent"
 import type { DriverLock, LockAcquireResult } from "../driver-lock"
 import type { Event, EventBus, EventListener } from "../events"
 import { Orchestrator } from "../orchestrator"
-import { FakeSessionRunner } from "../session"
+import { FakeSessionRunner, PiVisibleLeadSessionRunner } from "../session"
 import { InMemoryStore } from "../store"
 import type { WorkItem } from "../types"
 import { FakeWorktreeProvider } from "../worktree/provisioner"
@@ -371,6 +376,147 @@ function extractItemId(text: string): number {
 	return m ? Number(m[1]) : 0
 }
 
+type VisiblePiApi = Pick<
+	ExtensionAPI,
+	| "on"
+	| "sendUserMessage"
+	| "registerTool"
+	| "getActiveTools"
+	| "setActiveTools"
+>
+
+class ScriptedVisiblePi {
+	readonly handlers = new Map<
+		string,
+		Array<(event: unknown, ctx: ExtensionContext) => unknown>
+	>()
+	readonly registeredTools: ToolDefinition[] = []
+	readonly sent: string[] = []
+	activeTools: string[] = []
+	onSend?: (text: string, ctx: ExtensionContext) => Promise<void>
+	private toolCounter = 0
+
+	constructor(private readonly ctx: ExtensionContext) {}
+
+	on(
+		event: string,
+		handler: (event: unknown, ctx: ExtensionContext) => unknown,
+	): void {
+		const list = this.handlers.get(event) ?? []
+		list.push(handler)
+		this.handlers.set(event, list)
+	}
+
+	registerTool(tool: ToolDefinition): void {
+		this.registeredTools.push(tool)
+		if (!this.activeTools.includes(tool.name)) this.activeTools.push(tool.name)
+	}
+
+	getActiveTools(): string[] {
+		return [...this.activeTools]
+	}
+
+	setActiveTools(toolNames: string[]): void {
+		this.activeTools = [...toolNames]
+	}
+
+	sendUserMessage(text: string): void {
+		this.sent.push(text)
+		queueMicrotask(() => {
+			this.onSend?.(text, this.ctx).catch((error) => {
+				throw error
+			})
+		})
+	}
+
+	async emit(
+		eventName: string,
+		event: unknown,
+		ctx: ExtensionContext = this.ctx,
+	): Promise<void> {
+		for (const handler of this.handlers.get(eventName) ?? []) {
+			await handler(event, ctx)
+		}
+	}
+
+	async executeTool(
+		name: string,
+		params: unknown,
+		ctx: ExtensionContext = this.ctx,
+	): Promise<void> {
+		const tool = this.registeredTools.find((t) => t.name === name)
+		if (!tool) throw new Error(`visible tool not registered: ${name}`)
+		const toolCallId = `visible-${++this.toolCounter}`
+		await this.emit(
+			"tool_execution_start",
+			{
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: name,
+				args: params,
+			},
+			ctx,
+		)
+		let result: unknown
+		let isError = false
+		try {
+			result = await (tool.execute as (...args: unknown[]) => Promise<unknown>)(
+				toolCallId,
+				params,
+				new AbortController().signal,
+				undefined,
+				ctx,
+			)
+		} catch (error) {
+			isError = true
+			result = {
+				content: [
+					{
+						type: "text",
+						text: error instanceof Error ? error.message : String(error),
+					},
+				],
+			}
+		}
+		await this.emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId,
+				toolName: name,
+				result,
+				isError,
+			},
+			ctx,
+		)
+	}
+
+	async settle(ctx: ExtensionContext = this.ctx): Promise<void> {
+		await this.emit("agent_settled", { type: "agent_settled" }, ctx)
+	}
+}
+
+function visibleContext(sessionId = "visible-lead-session"): ExtensionContext {
+	return {
+		cwd: "/fake-repo/.command-center/worktrees/visible1/integration",
+		isIdle: () => true,
+		abort: () => undefined,
+		sessionManager: { getSessionId: () => sessionId },
+	} as ExtensionContext
+}
+
+async function waitFor(
+	cond: () => Promise<boolean>,
+	timeoutMs = 2000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		if (await cond()) return
+		await new Promise((r) => setTimeout(r, 10))
+	}
+	throw new Error("timed out waiting for the background drive")
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -477,6 +623,230 @@ describe("Orchestrator — launchMission", () => {
 		await expect(orch.launchMission("ghost")).rejects.toThrow(
 			/Unknown mission: ghost/,
 		)
+	})
+})
+
+describe("Orchestrator — visible lead event bridge", () => {
+	test("review_work_item results from the visible lead reach the review loop once", async () => {
+		const store = new InMemoryStore()
+		const wt = new FakeWorktreeProvider()
+		const ctx = visibleContext()
+		const pi = new ScriptedVisiblePi(ctx)
+		const missionId = "visible1"
+		const busEvents: Event[] = []
+
+		const orch = new Orchestrator({
+			store,
+			worktreeProvider: wt,
+			sessionRunner: (bus, store) => {
+				bus.subscribe((e) => busEvents.push(e))
+				return new PiVisibleLeadSessionRunner({
+					bus,
+					store,
+					pi: pi as unknown as VisiblePiApi,
+					getContext: () => ctx,
+					resolveVisibleRole: () => ({
+						missionId,
+						roleName: "mission_lead",
+					}),
+					hiddenRunner: new FakeSessionRunner(bus, {
+						onPrompt: async (session) => {
+							if (session.who.roleName !== "work_item_owner") return
+							await simulateRequestReview(
+								bus,
+								missionId,
+								session.who.workItemId!,
+								"visible review ready",
+							)
+						},
+					}),
+				})
+			},
+		})
+
+		await store.writeMission({
+			id: missionId,
+			repoPath: "/test-repo",
+			title: "Visible Review",
+			description: "exercise visible review",
+			acceptanceCriteria: [],
+			status: "pending",
+		})
+		await store.writePlan(missionId, {
+			items: [
+				{
+					id: 1,
+					title: "Item A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+		await orch.registerMission(missionId)
+
+		pi.onSend = async (text, toolCtx) => {
+			if (text.includes("ready for review")) {
+				await pi.executeTool(
+					"review_work_item",
+					{ workItemId: 1, decision: "accept" },
+					toolCtx,
+				)
+			}
+			await pi.settle(toolCtx)
+		}
+
+		await orch.launchMission(missionId)
+		await waitFor(
+			async () =>
+				(await store.readMission(missionId))?.status === "ready_for_acceptance",
+		)
+
+		expect((await store.readPlan(missionId))?.items[0]?.status).toBe("accepted")
+		expect(
+			busEvents.filter(
+				(e) =>
+					e.type === "tool-call-ended" && e.toolName === "review_work_item",
+			),
+		).toHaveLength(1)
+		expect(wt.calls).toContain(`acceptMerge:${missionId}:1`)
+	})
+
+	test("respond_to_help details from the visible lead reach triage before owner continuation", async () => {
+		const store = new InMemoryStore()
+		const wt = new FakeWorktreeProvider()
+		const ctx = visibleContext()
+		const pi = new ScriptedVisiblePi(ctx)
+		const missionId = "visible1"
+		const busEvents: Event[] = []
+
+		const orch = new Orchestrator({
+			store,
+			worktreeProvider: wt,
+			sessionRunner: (bus, store) => {
+				bus.subscribe((e) => busEvents.push(e))
+				return new PiVisibleLeadSessionRunner({
+					bus,
+					store,
+					pi: pi as unknown as VisiblePiApi,
+					getContext: () => ctx,
+					resolveVisibleRole: () => ({
+						missionId,
+						roleName: "mission_lead",
+					}),
+					hiddenRunner: new FakeSessionRunner(bus, {
+						onPrompt: async (session, text) => {
+							if (session.who.roleName !== "work_item_owner") return
+							const itemId = session.who.workItemId!
+							if (text.includes("has been assigned")) {
+								bus.emit({
+									type: "tool-call-ended",
+									missionId,
+									roleName: "work_item_owner",
+									workItemId: itemId,
+									toolCallId: "tc-help",
+									toolName: "request_help",
+									result: {
+										details: {
+											kind: "request_help",
+											workItemId: itemId,
+											reason: "blocked on visible triage",
+										},
+									},
+									isError: false,
+								})
+							} else if (text.includes("Mission Lead has responded")) {
+								expect(text).toContain("Use the existing helper")
+								await simulateRequestReview(
+									bus,
+									missionId,
+									itemId,
+									"continued after visible help",
+								)
+							}
+						},
+					}),
+				})
+			},
+		})
+
+		await store.writeMission({
+			id: missionId,
+			repoPath: "/test-repo",
+			title: "Visible Triage",
+			description: "exercise visible triage",
+			acceptanceCriteria: [],
+			status: "pending",
+		})
+		await store.writePlan(missionId, {
+			items: [
+				{
+					id: 1,
+					title: "Item A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+		await orch.registerMission(missionId)
+
+		pi.onSend = async (text, toolCtx) => {
+			if (text.includes("requested help")) {
+				await pi.executeTool(
+					"write_plan",
+					{
+						items: [
+							{
+								id: 1,
+								title: "Item A",
+								description: "Do A",
+								dependencies: [],
+							},
+						],
+					},
+					toolCtx,
+				)
+				await pi.executeTool(
+					"respond_to_help",
+					{ workItemId: 1, guidance: "Use the existing helper" },
+					toolCtx,
+				)
+			} else if (text.includes("ready for review")) {
+				await pi.executeTool(
+					"review_work_item",
+					{ workItemId: 1, decision: "accept" },
+					toolCtx,
+				)
+			}
+			await pi.settle(toolCtx)
+		}
+
+		await orch.launchMission(missionId)
+		await waitFor(
+			async () =>
+				(await store.readMission(missionId))?.status === "ready_for_acceptance",
+		)
+
+		expect(
+			busEvents.some(
+				(e) =>
+					e.type === "help-responded" &&
+					e.workItemId === 1 &&
+					e.guidance === "Use the existing helper",
+			),
+		).toBe(true)
+		expect(
+			busEvents.filter(
+				(e) => e.type === "tool-call-ended" && e.toolName === "respond_to_help",
+			),
+		).toHaveLength(1)
+		expect(
+			busEvents.some(
+				(e) => e.type === "plan-written" && e.missionId === missionId,
+			),
+		).toBe(true)
+		expect((await store.readPlan(missionId))?.items[0]?.status).toBe("accepted")
 	})
 })
 

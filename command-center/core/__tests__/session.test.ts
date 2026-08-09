@@ -376,6 +376,105 @@ describe("PiVisibleLeadSessionRunner", () => {
 		)
 	})
 
+	test("bridges visible lead tool results with verdict details", async () => {
+		const bus = new EventBus()
+		const store = new InMemoryStore()
+		const pi = new FakeVisiblePi()
+		const ctx = visibleCtx()
+		const events: EmittableEvent[] = []
+		bus.subscribe((e) => events.push(e))
+		const runner = new PiVisibleLeadSessionRunner({
+			bus,
+			store,
+			pi: pi as unknown as VisiblePiApi,
+			getContext: () => ctx,
+			resolveVisibleRole: () => lead,
+			hiddenRunner: new FakeSessionRunner(bus),
+		})
+
+		await runner.startOrResume(lead, ctx.cwd, "lead prompt", [
+			tool("review_work_item"),
+			tool("respond_to_help"),
+			tool("write_plan"),
+		])
+
+		const reviewToolEnd = {
+			type: "tool_execution_end",
+			toolCallId: "tc-review",
+			toolName: "review_work_item",
+			result: {
+				details: {
+					kind: "review_work_item",
+					workItemId: 2,
+					decision: "rework",
+					applied: true,
+					feedback: "tighten tests",
+				},
+			},
+			isError: false,
+		}
+		await pi.emit("tool_execution_end", reviewToolEnd, ctx)
+		await pi.emit("tool_execution_end", reviewToolEnd, ctx)
+		await pi.emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-help",
+				toolName: "respond_to_help",
+				result: {
+					details: {
+						kind: "respond_to_help",
+						workItemId: 2,
+						guidance: "sync integration and retry",
+					},
+				},
+				isError: false,
+			},
+			ctx,
+		)
+		await pi.emit(
+			"tool_execution_end",
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-plan",
+				toolName: "write_plan",
+				result: { details: { plan: { items: [] } } },
+				isError: false,
+			},
+			ctx,
+		)
+
+		const reviewEvents = events.filter(
+			(e) => e.type === "tool-call-ended" && e.toolName === "review_work_item",
+		)
+		expect(reviewEvents).toHaveLength(1)
+		const review = reviewEvents[0]
+		expect(review).toMatchObject({
+			type: "tool-call-ended",
+			missionId: "7k3a9fqa",
+			roleName: "mission_lead",
+			toolCallId: "tc-review",
+		})
+		expect(review).not.toHaveProperty("workItemId")
+		expect(
+			(review as { result?: { details?: { workItemId?: number } } }).result
+				?.details?.workItemId,
+		).toBe(2)
+
+		const help = events.find(
+			(e) => e.type === "tool-call-ended" && e.toolName === "respond_to_help",
+		)
+		expect(
+			(help as { result?: { details?: { workItemId?: number } } }).result
+				?.details?.workItemId,
+		).toBe(2)
+		expect(
+			events.some(
+				(e) => e.type === "tool-call-ended" && e.toolName === "write_plan",
+			),
+		).toBe(true)
+	})
+
 	test("is inert and falls back to the hidden runner when the current session is not the mission lead", async () => {
 		const bus = new EventBus()
 		const store = new InMemoryStore()
