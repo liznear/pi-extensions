@@ -119,6 +119,12 @@ function hasAnimatedActivity(mode: CommandCenterWidgetMode): boolean {
 /** Missions parked because the visible session detached from their lead. */
 const attachmentParkedMissions = new Set<string>()
 let attachmentGateQueue: Promise<void> = Promise.resolve()
+/**
+ * Source-repo sessions to return to when detaching from a Mission Lead.
+ * Session switches replace the visible session, but this module stays loaded,
+ * so the mapping survives the `/cc new` → Mission Lead transition.
+ */
+const parentSessionByMission = new Map<string, string>()
 
 function activityKey(missionId: string, workItemId: number): string {
 	return `${missionId}:${workItemId}`
@@ -204,7 +210,7 @@ async function attachToPath(
 	path: string,
 	missionId: string,
 	roleName: RoleName,
-): Promise<void> {
+): Promise<boolean> {
 	await ctx.ui.notify(
 		`Switching focus to Mission ${missionId} Role ${roleName}...`,
 		"info",
@@ -212,7 +218,9 @@ async function attachToPath(
 	const result = await ctx.switchSession(path, {})
 	if (result?.cancelled) {
 		await ctx.ui.notify(`Session switch cancelled`, "error")
+		return false
 	}
+	return true
 }
 
 /**
@@ -226,6 +234,11 @@ async function attachToRole(
 	roleName: RoleName,
 	workItemId?: number,
 ): Promise<boolean> {
+	const mission = await orch.store.readMission(missionId)
+	const sourceSessionFile =
+		mission && normalizedPath(ctx.cwd) === normalizedPath(mission.repoPath)
+			? ctx.sessionManager.getSessionFile()
+			: undefined
 	const target = await resolveAttachTarget(
 		orch,
 		missionId,
@@ -239,8 +252,54 @@ async function attachToRole(
 		)
 		return false
 	}
-	await attachToPath(ctx, target.path, missionId, roleName)
+	const attached = await attachToPath(ctx, target.path, missionId, roleName)
+	if (!attached) return false
+	if (sourceSessionFile) {
+		parentSessionByMission.set(missionId, sourceSessionFile)
+	}
 	return true
+}
+
+/**
+ * Return from a Mission Lead worktree to the source-repo session that was
+ * visible when the mission was attached.
+ */
+async function detachToParentSession(
+	ctx: ExtensionCommandContext,
+	orch: Orchestrator,
+): Promise<void> {
+	const missions = await orch.store.listMissions()
+	const mission = missions.find((candidate) =>
+		isLeadAttachedToMission(candidate, ctx.cwd),
+	)
+	if (!mission) {
+		await ctx.ui.notify(
+			"You are not attached to a Mission Lead session.",
+			"error",
+		)
+		return
+	}
+
+	const parentSessionFile = parentSessionByMission.get(mission.id)
+	if (!parentSessionFile) {
+		await ctx.ui.notify(
+			`No original parent-repo session is known for mission ${mission.id}. Re-attach from the parent repo with /cc attach ${mission.id}.`,
+			"error",
+		)
+		return
+	}
+
+	const result = await ctx.switchSession(parentSessionFile, {
+		withSession: async (replacementCtx) => {
+			await replacementCtx.ui.notify(
+				`Returned to the parent-repo session for mission ${mission.id}`,
+				"info",
+			)
+		},
+	})
+	if (result.cancelled) {
+		await ctx.ui.notify("Session switch cancelled", "error")
+	}
 }
 
 /**
@@ -795,6 +854,15 @@ export default function (pi: ExtensionAPI) {
 				// sessions; in_progress missions are driven and already bind on
 				// attach — bindVisibleLead no-ops for those anyway.
 				await attachToRole(ctx, orch, missionId, roleName)
+			} else if (cmd === "detach") {
+				// /cc detach — return to the source-repo session saved when this
+				// mission was attached.
+				if (argsList[1]) {
+					await ctx.ui.notify("Usage: /cc detach", "error")
+					return
+				}
+				await detachToParentSession(ctx, orch)
+				return
 			} else if (cmd === "resume") {
 				// /cc resume — re-drive the mission whose lead session is visible.
 				// Explicit takeover: force-acquires the driver lock; a displaced

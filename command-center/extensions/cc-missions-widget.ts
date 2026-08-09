@@ -203,12 +203,12 @@ export function normalMissionLine(
 	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
 	isLast = true,
 ): string {
-  const state = sessionAttached
-    ? fg("accent", "Running...")
-    : fg(
-      STATUS_COLOR[mission.status],
-      `Paused[${STATUS_LABEL[mission.status]}]`,
-    );
+	const state = sessionAttached
+		? fg("accent", "Running...")
+		: fg(
+				STATUS_COLOR[mission.status],
+				`Paused[${STATUS_LABEL[mission.status]}]`,
+			)
 	const inProgress = fg("accent", String(mission.itemCounts.in_progress))
 	const completed = fg("success", String(mission.itemCounts.accepted))
 	const conn = fg("dim", connector(isLast))

@@ -24,7 +24,7 @@ interface Subcommand {
 	usage: string
 }
 
-/** The nine `/cc` subcommands, in display order for autocomplete. */
+/** The ten `/cc` subcommands, in display order for autocomplete. */
 const SUBCOMMANDS: readonly Subcommand[] = [
 	{ name: "list", usage: "List missions" },
 	{
@@ -51,6 +51,10 @@ const SUBCOMMANDS: readonly Subcommand[] = [
 	{
 		name: "attach",
 		usage: "Attach to the Mission Lead session: /cc attach <missionId>",
+	},
+	{
+		name: "detach",
+		usage: "Return to the original parent-repo session: /cc detach",
 	},
 	{ name: "accept", usage: "Accept a mission: /cc accept <missionId>" },
 	{

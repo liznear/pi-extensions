@@ -53,6 +53,7 @@ describe("ccCompletionForCursor — subcommand position", () => {
 			"abort",
 			"delete",
 			"attach",
+			"detach",
 			"accept",
 			"reject",
 		])
@@ -74,6 +75,10 @@ describe("ccCompletionForCursor — subcommand position", () => {
 					"Attach to the Mission Lead session: /cc attach <missionId>",
 			},
 		])
+	})
+
+	test("detach does not complete a mission id", () => {
+		expect(ccCompletionForCursor("/cc detach ", MISSIONS)).toBeNull()
 	})
 
 	test("no matching subcommand returns null", () => {
