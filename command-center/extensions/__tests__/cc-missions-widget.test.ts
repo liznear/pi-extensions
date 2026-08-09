@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import type { ThemeColor } from "@earendil-works/pi-coding-agent"
 import type { MarkdownTheme } from "@earendil-works/pi-tui"
-import { Markdown } from "@earendil-works/pi-tui"
+import { Markdown, visibleWidth } from "@earendil-works/pi-tui"
 import type { MissionSummary, WorkItemCounts } from "../../core/types"
 import {
 	buildMissionsMarkdown,
+	isInsideMissionWorktrees,
 	MAX_TITLE_CHARS,
 	MAX_WIDGET_LINES,
-	MISSIONS_WIDGET_TITLE,
 	type MissionWidgetRow,
-	missionsTopBorder,
+	missionsHeader,
 	relatedMissions,
 	stripTableBorders,
 } from "../cc-missions-widget"
@@ -44,10 +44,16 @@ function wrow(
 		mission?: Partial<MissionSummary>
 	},
 ): MissionWidgetRow {
-	const { mission: missionOverrides, sessionAttached = false, id } = partial
+	const {
+		mission: missionOverrides,
+		sessionAttached = false,
+		id,
+		items,
+	} = partial
 	return {
 		mission: mission({ id, ...missionOverrides }),
 		sessionAttached,
+		...(items ? { items } : {}),
 	}
 }
 
@@ -100,11 +106,78 @@ describe("relatedMissions — path normalization", () => {
 		).toEqual(["m1"])
 	})
 
-	test("worktree path does NOT match the source repo", () => {
+	test("a session inside the mission's worktrees dir matches that mission", () => {
+		const missions = [mission({ id: "m1", repoPath: "/repo/a" })]
+		expect(
+			relatedMissions(missions, "/repo/a/.command-center/worktrees/m1").map(
+				(m) => m.id,
+			),
+		).toEqual(["m1"])
+	})
+
+	test("an owner worktree path matches its mission", () => {
+		const missions = [mission({ id: "m1", repoPath: "/repo/a" })]
+		expect(
+			relatedMissions(
+				missions,
+				"/repo/a/.command-center/worktrees/m1/work-3",
+			).map((m) => m.id),
+		).toEqual(["m1"])
+	})
+
+	test("another mission's worktree does not match", () => {
+		const missions = [mission({ id: "m1", repoPath: "/repo/a" })]
+		expect(
+			relatedMissions(missions, "/repo/a/.command-center/worktrees/m2").map(
+				(m) => m.id,
+			),
+		).toEqual([])
+	})
+
+	test("non-worktree path under .command-center does not match", () => {
 		const missions = [mission({ id: "m1", repoPath: "/repo/a" })]
 		expect(
 			relatedMissions(missions, "/repo/a/.command-center/m1").map((m) => m.id),
 		).toEqual([])
+	})
+})
+
+// ---------------------------------------------------------------------------
+// isInsideMissionWorktrees — attach detection (task list expansion)
+// ---------------------------------------------------------------------------
+
+describe("isInsideMissionWorktrees", () => {
+	const m = mission({ id: "m1", repoPath: "/repo/a" })
+
+	test("false for the source repo root", () => {
+		expect(isInsideMissionWorktrees(m, "/repo/a")).toBe(false)
+	})
+
+	test("true for the integration (lead) worktree dir", () => {
+		expect(
+			isInsideMissionWorktrees(m, "/repo/a/.command-center/worktrees/m1"),
+		).toBe(true)
+	})
+
+	test("true for an owner worktree dir", () => {
+		expect(
+			isInsideMissionWorktrees(
+				m,
+				"/repo/a/.command-center/worktrees/m1/work-3",
+			),
+		).toBe(true)
+	})
+
+	test("false for another mission's worktrees", () => {
+		expect(
+			isInsideMissionWorktrees(m, "/repo/a/.command-center/worktrees/m2"),
+		).toBe(false)
+	})
+
+	test("false for a sibling prefix (m1x ≠ m1)", () => {
+		expect(
+			isInsideMissionWorktrees(m, "/repo/a/.command-center/worktrees/m1x"),
+		).toBe(false)
 	})
 })
 
@@ -168,14 +241,14 @@ describe("buildMissionsMarkdown", () => {
 			[
 				"| ID | STATUS | SESSION | TITLE |",
 				"| --- | --- | --- | --- |",
-				"| abc12345 | In progress | attached | Fix flaky tests |",
+				"| ┗━ abc12345 | In progress | attached | Fix flaky tests |",
 			].join("\n"),
 		)
 	})
 
 	test("shows detached when no session is attached", () => {
 		const md = buildMissionsMarkdown([wrow({ id: "m1" })])
-		expect(md).toContain("| m1 | In progress | detached | Mission |")
+		expect(md).toContain("| ┗━ m1 | In progress | detached | Mission |")
 	})
 
 	test("colors status and session cells via fg", () => {
@@ -191,10 +264,10 @@ describe("buildMissionsMarkdown", () => {
 			fg,
 		)
 		expect(md).toContain(
-			"| m1 | <success>Completed</success> | <accent>attached</accent> | Mission |",
+			"| ┣━ m1 | <success>Completed</success> | <accent>attached</accent> | Mission |",
 		)
 		expect(md).toContain(
-			"| m2 | <accent>In progress</accent> | <dim>detached</dim> | Mission |",
+			"| ┗━ m2 | <accent>In progress</accent> | <dim>detached</dim> | Mission |",
 		)
 	})
 
@@ -219,7 +292,9 @@ describe("buildMissionsMarkdown", () => {
 		const md = buildMissionsMarkdown([
 			wrow({ id: "m1", mission: { title: "pipe | and \\ backslash" } }),
 		])
-		expect(md).toContain("| pipe \\| and \\\\ backslash |")
+		expect(md).toContain(
+			"| ┗━ m1 | In progress | detached | pipe \\| and \\\\ backslash |",
+		)
 	})
 
 	test("caps rows at maxRows with a +N more row", () => {
@@ -248,6 +323,116 @@ describe("buildMissionsMarkdown", () => {
 		expect(md).toContain("… +3 more")
 	})
 
+	test("renders nested work items under their mission row", () => {
+		const md = buildMissionsMarkdown([
+			wrow({
+				id: "abc12345",
+				mission: { title: "Fix flaky tests" },
+				items: [
+					{ id: 1, title: "Repro", status: "accepted" },
+					{ id: 2, title: "Fix", status: "in_progress" },
+					{ id: 3, title: "Flake guard", status: "ready_for_review" },
+					{ id: 4, title: "Cleanup", status: "cancelled" },
+				],
+			}),
+		])
+		expect(md).toBe(
+			[
+				"| ID | STATUS | SESSION | TITLE |",
+				"| --- | --- | --- | --- |",
+				"| ┣━ abc12345 | In progress | detached | Fix flaky tests |",
+				"| ┃  ┣━ #1 | Accepted | — | Repro |",
+				"| ┃  ┣━ #2 | In progress | — | Fix |",
+				"| ┃  ┣━ #3 | Ready for review | — | Flake guard |",
+				"| ┃  ┗━ #4 | Cancelled | — | Cleanup |",
+			].join("\n"),
+		)
+	})
+
+	test("renders live activity in the item session cell", () => {
+		const md = buildMissionsMarkdown([
+			wrow({
+				id: "m1",
+				items: [
+					{
+						id: 1,
+						title: "Fix",
+						status: "in_progress",
+						activity: { phase: "tool", tool: "git diff" },
+					},
+					{
+						id: 2,
+						title: "Think",
+						status: "in_progress",
+						activity: { phase: "thinking" },
+					},
+					{
+						id: 3,
+						title: "Docs",
+						status: "pending",
+						activity: { phase: "writing" },
+					},
+					{
+						id: 4,
+						title: "Idle",
+						status: "in_progress",
+						activity: { phase: "idle" },
+					},
+				],
+			}),
+		])
+		expect(md).toContain("| ┃  ┣━ #1 | In progress | 🔧 git diff | Fix |")
+		expect(md).toContain("| ┃  ┣━ #2 | In progress | 💭 thinking… | Think |")
+		expect(md).toContain("| ┃  ┣━ #3 | Pending | ✍️ writing… | Docs |")
+		expect(md).toContain("| ┃  ┗━ #4 | In progress | — | Idle |")
+	})
+
+	test("caps a long tool name in the activity cell", () => {
+		const longTool = "a".repeat(40)
+		const md = buildMissionsMarkdown([
+			wrow({
+				id: "m1",
+				items: [
+					{
+						id: 1,
+						title: "Fix",
+						status: "in_progress",
+						activity: { phase: "tool", tool: longTool },
+					},
+				],
+			}),
+		])
+		expect(md).toContain(
+			`| ┃  ┗━ #1 | In progress | 🔧 ${longTool.slice(0, 24)}… | Fix |`,
+		)
+	})
+
+	test("truncation counts nested items toward maxRows", () => {
+		const md = buildMissionsMarkdown(
+			[
+				wrow({
+					id: "m1",
+					items: [
+						{ id: 1, title: "a", status: "pending" },
+						{ id: 2, title: "b", status: "pending" },
+					],
+				}),
+				wrow({ id: "m2" }),
+			],
+			undefined,
+			2,
+		)
+		const lines = md.split("\n")
+		// Only the first item fits under the cap; m1 keeps its ┣━ branch and
+		// the surviving item closes the tree.
+		const itemLines = lines.filter((l) => l.includes("#"))
+		expect(itemLines).toHaveLength(1)
+		expect(lines).toContain("| ┣━ m1 | In progress | detached | Mission |")
+		expect(lines).toContain("| ┃  ┗━ #1 | Pending | — | a |")
+		expect(lines.join("\n")).not.toContain("#2")
+		expect(lines).toContain("|  |  |  | … +2 more |")
+	})
+
 	test("no +N more row when everything fits", () => {
 		const md = buildMissionsMarkdown([wrow({ id: "m1" })])
 		expect(md).not.toContain("more")
@@ -258,7 +443,9 @@ describe("buildMissionsMarkdown", () => {
 		const md = buildMissionsMarkdown([
 			wrow({ id: "m1", mission: { title: long } }),
 		])
-		expect(md).toContain(`| ${long.slice(0, MAX_TITLE_CHARS)}… |`)
+		expect(md).toContain(
+			`| ┗━ m1 | In progress | detached | ${long.slice(0, MAX_TITLE_CHARS)}… |`,
+		)
 	})
 })
 
@@ -325,29 +512,60 @@ describe("stripTableBorders", () => {
 })
 
 // ---------------------------------------------------------------------------
-// missionsTopBorder
+// missionsHeader
 // ---------------------------------------------------------------------------
 
-describe("missionsTopBorder", () => {
-	test("renders ─── Title ─… with the title in accent and dashes dim", () => {
-		const border = missionsTopBorder("Command Center", fg, 40)
-		expect(border).toBe(
-			"<dim>─── </dim><accent>Command Center</accent><dim> " +
-				"─".repeat(21) +
-				"</dim>",
+describe("missionsHeader", () => {
+	const identity = (_color: ThemeColor, text: string) => text
+	const noBold = (text: string) => text
+
+	test("renders a mini-task-style header: bold accent title + dim summary", () => {
+		const header = missionsHeader(
+			[wrow({ id: "abc12345", mission: { status: "in_progress" } })],
+			fg,
+			noBold,
+			80,
 		)
+		expect(header).toBe(
+			" <accent>Command Center</accent>  <dim>1 active \u00b7 0/1 done</dim>",
+		)
+		// No ─ top border line.
+		expect(header).not.toContain("\u2500")
 	})
 
-	test("clamps a title longer than the width", () => {
-		const border = missionsTopBorder("Command Center is quite long", fg, 20)
-		expect(border).toBe(
-			"<dim>─── </dim><accent>Command Center </accent><dim> </dim>",
+	test("summarizes active and completed missions like the mini-task widget", () => {
+		const header = missionsHeader(
+			[
+				wrow({ id: "m1", mission: { status: "in_progress" } }),
+				wrow({ id: "m2", mission: { status: "ready_for_acceptance" } }),
+				wrow({ id: "m3", mission: { status: "completed" } }),
+				wrow({ id: "m4", mission: { status: "cancelled" } }),
+			],
+			fg,
+			noBold,
+			80,
 		)
+		expect(header).toContain("<dim>2 active \u00b7 1/4 done</dim>")
 	})
 
-	test("fills to exactly the width", () => {
-		const identity = (_color: ThemeColor, text: string) => text
-		expect(missionsTopBorder("Command Center", identity, 60)).toHaveLength(60)
+	test("applies bold to the title", () => {
+		const header = missionsHeader(
+			[wrow({ id: "m1" })],
+			identity,
+			(text) => `*${text}*`,
+			80,
+		)
+		expect(header).toBe(" *Command Center*  1 active \u00b7 0/1 done")
+	})
+
+	test("truncates to the width", () => {
+		const header = missionsHeader([wrow({ id: "m1" })], identity, noBold, 12)
+		expect(visibleWidth(header)).toBeLessThanOrEqual(12)
+	})
+
+	test("empty rows render a 0/0 summary", () => {
+		const header = missionsHeader([], identity, noBold, 80)
+		expect(header).toBe(" Command Center  0 active \u00b7 0/0 done")
 	})
 })
 
@@ -378,24 +596,29 @@ describe("Markdown integration", () => {
 	// is covered by the missionsTopBorder tests).
 	const plain = (_color: ThemeColor, text: string) => text
 
-	const frame = (md: string, width: number) => {
+	const frame = (
+		rows: readonly MissionWidgetRow[],
+		md: string,
+		width: number,
+	) => {
 		const table = stripTableBorders(
 			new Markdown(md, 0, 0, mdTheme).render(width),
 		).map((line) => (line ? `  ${line}` : line)) // rows indented
-		return [missionsTopBorder(MISSIONS_WIDGET_TITLE, plain, width), ...table]
+		return [missionsHeader(rows, plain, (t) => t, width), ...table]
 	}
 
-	test("renders a top border above indented, open pipe rows", () => {
-		const md = buildMissionsMarkdown([
+	test("renders a header line above indented, open pipe rows", () => {
+		const rows = [
 			wrow({
 				id: "abc12345",
 				mission: { title: "Fix flaky tests" },
 				sessionAttached: true,
 			}),
-		])
-		const lines = frame(md, 60)
-		// Top border carries the title; no bottom border.
-		expect(lines[0]!).toBe(`─── Command Center ${`─`.repeat(41)}`)
+		]
+		const md = buildMissionsMarkdown(rows)
+		const lines = frame(rows, md, 60)
+		// Header line carries title + summary, mini-task style; no top border.
+		expect(lines[0]!).toBe(" Command Center  1 active \u00b7 0/1 done")
 		expect(lines.every((l) => !/^[─└]+$/.test(l))).toBe(true)
 		// Rows are indented, but the top border is not.
 		expect(lines.every((l) => !l.startsWith("│"))).toBe(true)
@@ -404,7 +627,7 @@ describe("Markdown integration", () => {
 		// No row keeps its right wall, even when the renderer padded it.
 		expect(lines.every((l) => !l.trimEnd().endsWith("│"))).toBe(true)
 		// Inner column separators and content kept.
-		expect(lines.some((l) => l.includes("  abc12345 │"))).toBe(true)
+		expect(lines.some((l) => l.includes("┗━ abc12345 │"))).toBe(true)
 	})
 
 	test("keeps ANSI colors from the status/session cells through rendering", () => {
@@ -422,10 +645,9 @@ describe("Markdown integration", () => {
 	})
 
 	test("wraps long titles inside table cells at narrow widths", () => {
-		const md = buildMissionsMarkdown([
-			wrow({ id: "abc12345", mission: { title: "a".repeat(200) } }),
-		])
-		const lines = frame(md, 40)
+		const rows = [wrow({ id: "abc12345", mission: { title: "a".repeat(200) } })]
+		const md = buildMissionsMarkdown(rows)
+		const lines = frame(rows, md, 40)
 		// The renderer wraps the 200-char title across multiple cell lines.
 		const rowLines = lines.filter((l) => l.includes("│"))
 		expect(rowLines.length).toBeGreaterThan(2)

@@ -17,11 +17,12 @@ import type { RoleName } from "../core/types"
 import { WorktreeProvisioner } from "../core/worktree/provisioner"
 import { ccCompletionForCursor } from "./cc-completions"
 import {
+	type ActivityState,
 	buildMissionsMarkdown,
+	isInsideMissionWorktrees,
 	MISSIONS_WIDGET_KEY,
-	MISSIONS_WIDGET_TITLE,
 	type MissionWidgetRow,
-	missionsTopBorder,
+	missionsHeader,
 	relatedMissions,
 	stripTableBorders,
 } from "./cc-missions-widget"
@@ -30,6 +31,27 @@ import {
 let orch: Orchestrator | null = null
 /** The live session context, refreshed on every session_start (widget target). */
 let widgetCtx: ExtensionContext | undefined
+
+/** Throttle for delta-driven widget refreshes (stream chunks coalesce here). */
+const WIDGET_REFRESH_MS = 200
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+/** The last rendered table skeleton; an identical skeleton skips a re-render. */
+let lastWidgetSkeleton: string | undefined
+/** Live per-item activity, keyed by `<missionId>:<workItemId>`. */
+const liveActivity = new Map<string, ActivityState>()
+
+function activityKey(missionId: string, workItemId: number): string {
+	return `${missionId}:${workItemId}`
+}
+
+/** Coalesce refreshes: at most one pending, flushed WIDGET_REFRESH_MS later. */
+function scheduleWidgetRefresh(): void {
+	if (refreshTimer) return
+	refreshTimer = setTimeout(() => {
+		refreshTimer = undefined
+		void refreshMissionsWidget()
+	}, WIDGET_REFRESH_MS)
+}
 
 /**
  * Resolve the session thread file to attach to for a role, waiting (bounded)
@@ -153,30 +175,54 @@ async function refreshMissionsWidget(): Promise<void> {
 	const related = relatedMissions(missions, ctx.cwd)
 	if (related.length === 0) {
 		ctx.ui.setWidget(MISSIONS_WIDGET_KEY, undefined)
+		lastWidgetSkeleton = undefined
 		return
 	}
 	// "Session attached" = a live process holds the mission's driver lock
-	// (a pi session is currently driving the mission).
+	// (a pi session is currently driving the mission). Items come from the
+	// persisted plan; live activity comes from the forwarded session events.
+	// A mission's task list is expanded only when the current session is
+	// attached to it (cwd inside its worktrees dir); otherwise missions show
+	// as single rows.
 	const driverLock = orch.driverLock
+	const store = orch.store
 	const rows: MissionWidgetRow[] = await Promise.all(
-		related.map(async (mission) => ({
-			mission,
-			sessionAttached: (await driverLock.status(mission.id)).held,
-		})),
+		related.map(async (mission) => {
+			const sessionAttached = (await driverLock.status(mission.id)).held
+			if (!isInsideMissionWorktrees(mission, ctx.cwd)) {
+				return { mission, sessionAttached }
+			}
+			const plan = await store.readPlan(mission.id)
+			return {
+				mission,
+				sessionAttached,
+				items: (plan?.items ?? []).map((item) => ({
+					id: item.id,
+					title: item.title,
+					status: item.status,
+					activity: liveActivity.get(activityKey(mission.id, item.id)),
+				})),
+			}
+		}),
 	)
+	// Skip the re-render when nothing visible changed — delta streams keep
+	// scheduling refreshes but rarely change the table (only phase/tool do).
+	const skeleton = buildMissionsMarkdown(rows)
+	if (skeleton === lastWidgetSkeleton) return
+	lastWidgetSkeleton = skeleton
 	// Render the missions as a markdown table: the Markdown component owns the
 	// column sizing, cell wrapping and narrow-width fallback. Strip the
 	// table's horizontal borders, header and outer walls, indent the rows,
-	// and frame the top with the Command Center title border.
+	// and prepend the mini-task-style Command Center header line.
 	ctx.ui.setWidget(MISSIONS_WIDGET_KEY, (_tui, theme) => {
 		const fg = (color: ThemeColor, text: string) => theme.fg(color, text)
 		const markdown = buildMissionsMarkdown(rows, fg)
 		const md = new Markdown(markdown, 0, 0, getMarkdownTheme())
 		return {
 			render: (width) => [
-				missionsTopBorder(MISSIONS_WIDGET_TITLE, fg, width),
+				missionsHeader(rows, fg, (text) => theme.bold(text), width),
 				...stripTableBorders(md.render(width)).map((line) =>
-					// Rows sit under the title border with a left indent.
+					// Rows sit under the header with a left indent.
 					line ? `  ${line}` : line,
 				),
 			],
@@ -215,11 +261,49 @@ export default function (pi: ExtensionAPI) {
 						"info",
 					)
 				}
-				// Keep the pinned missions list in sync with mission state.
+				// Live per-item activity for the pinned widget. Owner events carry
+				// workItemId; lead events don't map to an item row.
+				if (e.type === "reasoning-delta" && e.workItemId !== undefined) {
+					liveActivity.set(activityKey(e.missionId, e.workItemId), {
+						phase: "thinking",
+					})
+					scheduleWidgetRefresh()
+				} else if (e.type === "message-delta" && e.workItemId !== undefined) {
+					liveActivity.set(activityKey(e.missionId, e.workItemId), {
+						phase: "writing",
+					})
+					scheduleWidgetRefresh()
+				} else if (
+					e.type === "tool-call-started" &&
+					e.workItemId !== undefined
+				) {
+					liveActivity.set(activityKey(e.missionId, e.workItemId), {
+						phase: "tool",
+						tool: e.toolName,
+					})
+					scheduleWidgetRefresh()
+				} else if (
+					(e.type === "tool-call-ended" || e.type === "session-ended") &&
+					e.workItemId !== undefined
+				) {
+					liveActivity.set(activityKey(e.missionId, e.workItemId), {
+						phase: "idle",
+					})
+					scheduleWidgetRefresh()
+				} else if (e.type === "work-item-status-changed") {
+					liveActivity.delete(activityKey(e.missionId, e.workItemId))
+				} else if (e.type === "mission-deleted") {
+					for (const key of [...liveActivity.keys()]) {
+						if (key.startsWith(`${e.missionId}:`)) liveActivity.delete(key)
+					}
+				}
+
+				// Keep the pinned missions list in sync with mission/plan state.
 				if (
 					e.type === "mission-status-changed" ||
 					e.type === "work-item-status-changed" ||
 					e.type === "mission-defined" ||
+					e.type === "plan-written" ||
 					e.type === "mission-deleted"
 				) {
 					void refreshMissionsWidget()
@@ -232,8 +316,10 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// The widget targets the CURRENT session: refresh the context on every
-		// session_start (new/resume/fork/reload can change the cwd).
+		// session_start (new/resume/fork/reload can change the cwd). Reset the
+		// skeleton so the widget is always (re)built for the new session.
 		widgetCtx = ctx
+		lastWidgetSkeleton = undefined
 		await refreshMissionsWidget()
 
 		// /cc argument completions via a wrapper around the built-in provider.
