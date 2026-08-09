@@ -65,6 +65,19 @@ function stopWidgetPolling(): void {
 let lastWidgetSkeleton: string | undefined
 /** Live per-item activity, keyed by `<missionId>:<workItemId>`. */
 const liveActivity = new Map<string, ActivityState>()
+
+/** Whether the widget needs a render tick for an active activity spinner. */
+function hasAnimatedActivity(mode: CommandCenterWidgetMode): boolean {
+	return (
+		mode.kind === "mission-lead" &&
+		(mode.row.items ?? []).some((item) =>
+			["starting", "thinking", "writing", "tool"].includes(
+				item.activity?.phase ?? "",
+			),
+		)
+	)
+}
+
 /** Missions parked because the visible session detached from their lead. */
 const attachmentParkedMissions = new Set<string>()
 let attachmentGateQueue: Promise<void> = Promise.resolve()
@@ -383,12 +396,28 @@ async function refreshMissionsWidget(): Promise<void> {
 	const skeleton = commandCenterSkeleton(mode)
 	if (skeleton === lastWidgetSkeleton) return
 	lastWidgetSkeleton = skeleton
-	ctx.ui.setWidget(MISSIONS_WIDGET_KEY, (_tui, theme) => {
+	ctx.ui.setWidget(MISSIONS_WIDGET_KEY, (tui, theme) => {
 		const fg = (color: ThemeColor, text: string) => theme.fg(color, text)
+		let spinnerFrame = 0
+		const animationTimer = hasAnimatedActivity(mode)
+			? setInterval(() => {
+					spinnerFrame += 1
+					tui.requestRender()
+				}, WIDGET_REFRESH_MS)
+			: undefined
 		return {
 			render: (width) =>
-				renderCommandCenterWidget(mode, fg, (text) => theme.bold(text), width),
+				renderCommandCenterWidget(
+					mode,
+					fg,
+					(text) => theme.bold(text),
+					width,
+					spinnerFrame,
+				),
 			invalidate: () => {},
+			dispose: () => {
+				if (animationTimer) clearInterval(animationTimer)
+			},
 		}
 	})
 }
@@ -432,8 +461,15 @@ export default function (pi: ExtensionAPI) {
 					)
 				}
 				// Live per-item activity for the pinned widget. Owner events carry
-				// workItemId; lead events don't map to an item row.
-				if (e.type === "reasoning-delta" && e.workItemId !== undefined) {
+				// workItemId; lead events don't map to an item row. `session-ended`
+				// is a turn boundary in the normalized event vocabulary, not proof
+				// that the owner session was parked, so keep it in a waiting state.
+				if (e.type === "session-started" && e.workItemId !== undefined) {
+					liveActivity.set(activityKey(e.missionId, e.workItemId), {
+						phase: "starting",
+					})
+					scheduleWidgetRefresh()
+				} else if (e.type === "reasoning-delta" && e.workItemId !== undefined) {
 					liveActivity.set(activityKey(e.missionId, e.workItemId), {
 						phase: "thinking",
 					})
@@ -453,11 +489,23 @@ export default function (pi: ExtensionAPI) {
 					})
 					scheduleWidgetRefresh()
 				} else if (
-					(e.type === "tool-call-ended" || e.type === "session-ended") &&
+					(e.type === "tool-call-ended" ||
+						e.type === "message-ended" ||
+						e.type === "session-ended") &&
 					e.workItemId !== undefined
 				) {
 					liveActivity.set(activityKey(e.missionId, e.workItemId), {
-						phase: "idle",
+						phase: "waiting",
+					})
+					scheduleWidgetRefresh()
+				} else if (e.type === "help-requested" && e.workItemId !== undefined) {
+					liveActivity.set(activityKey(e.missionId, e.workItemId), {
+						phase: "needs_help",
+					})
+					scheduleWidgetRefresh()
+				} else if (e.type === "help-responded" && e.workItemId !== undefined) {
+					liveActivity.set(activityKey(e.missionId, e.workItemId), {
+						phase: "starting",
 					})
 					scheduleWidgetRefresh()
 				} else if (e.type === "work-item-status-changed") {

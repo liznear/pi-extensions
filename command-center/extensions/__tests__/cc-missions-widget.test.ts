@@ -131,7 +131,7 @@ describe("mode-specific widget rendering", () => {
 			sessionAttached: true,
 		})
 		expect(normalMissionLine(row, fg)).toBe(
-			"┗━ Ship feature(m1) <accent>Running...</accent> (<accent>2</accent> + <success>3</success> / 6)",
+			"  ┗━ Ship feature (m1) <accent>Running...</accent> (<accent>2</accent> + <success>3</success> / 6)",
 		)
 	})
 
@@ -141,11 +141,11 @@ describe("mode-specific widget rendering", () => {
 			mission: { status: "ready_for_acceptance" },
 		})
 		expect(normalMissionLine(row, fg)).toContain(
-			"<dim>Paused[Ready for acceptance]</dim>",
+			"<warning>Paused[Ready for acceptance]</warning>",
 		)
 	})
 
-	test("Mission Lead mode renders status and current action", () => {
+	test("Mission Lead mode renders the item number and colored activity", () => {
 		const item = {
 			id: 7,
 			title: "Implement widget",
@@ -153,7 +153,7 @@ describe("mode-specific widget rendering", () => {
 			activity: { phase: "tool" as const, tool: "write" },
 		}
 		expect(missionLeadItemLine(item, fg)).toBe(
-			"┗━ Implement widget<accent>[In progress]</accent>: <dim>write</dim>",
+			"  ┗━ <muted>#7</muted> Implement widget: <warning>Calling write -</warning>",
 		)
 	})
 
@@ -161,7 +161,7 @@ describe("mode-specific widget rendering", () => {
 		const row = wrow({ id: "m3", mission: { title: "Ship feature" } })
 		expect(
 			commandCenterHeader({ kind: "mission-lead", row }, identity, noBold, 80),
-		).toBe("Command Center - Mission Lead @ Ship feature(m3)")
+		).toBe("Command Center - Mission Lead @ Ship feature (m3)")
 	})
 
 	test("normal mode does not expand work items", () => {
@@ -183,9 +183,35 @@ describe("mode-specific widget rendering", () => {
 			],
 		})
 		expect(commandCenterLines({ kind: "mission-lead", row })).toEqual([
-			"┗━ First[Pending]: Idle",
-			"┗━ Second[Accepted]: Idle",
+			"  ┣━ #1 First: Queued",
+			"  ┗━ #2 Second: Accepted",
 		])
+	})
+
+	test("uses a branch connector for non-final rows", () => {
+		const row = wrow({
+			id: "m-connectors",
+			items: [
+				{ id: 1, title: "First", status: "pending" },
+				{ id: 2, title: "Last", status: "pending" },
+			],
+		})
+		expect(commandCenterLines({ kind: "mission-lead", row })).toEqual([
+			"  ┣━ #1 First: Queued",
+			"  ┗━ #2 Last: Queued",
+		])
+	})
+
+	test("uses a stable ASCII spinner frame", () => {
+		const item = {
+			id: 3,
+			title: "Implement widget",
+			status: "in_progress" as const,
+			activity: { phase: "thinking" as const },
+		}
+		expect(missionLeadItemLine(item, fg, true, 2)).toBe(
+			"  ┗━ <muted>#3</muted> Implement widget: <accent>Thinking |</accent>",
+		)
 	})
 
 	test("caps the widget rows", () => {

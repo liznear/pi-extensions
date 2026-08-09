@@ -35,8 +35,17 @@ export const MAX_TITLE_CHARS = 120
 export const ROW_LEFT_PADDING = "  "
 
 /** Live per-role activity for a work item, driven by forwarded session events. */
+export type ActivityPhase =
+	| "starting"
+	| "thinking"
+	| "writing"
+	| "tool"
+	| "waiting"
+	| "needs_help"
+	| "idle"
+
 export interface ActivityState {
-	phase: "thinking" | "writing" | "tool" | "idle"
+	phase: ActivityPhase
 	/** The tool name while `phase === "tool"`. */
 	tool?: string
 }
@@ -77,23 +86,30 @@ const STATUS_LABEL: Record<MissionStatus, string> = {
 	cancelled: "Cancelled",
 }
 
-/** Readable, title-cased labels for work-item statuses. */
-const WORK_ITEM_STATUS_LABEL: Record<WorkItemStatus, string> = {
-	pending: "Pending",
-	in_progress: "In progress",
-	ready_for_review: "Ready for review",
-	accepted: "Accepted",
-	cancelled: "Cancelled",
-}
-
-/** Per-status display color for work items. */
-const WORK_ITEM_STATUS_COLOR: Record<WorkItemStatus, ThemeColor> = {
+/** Per-status display color for missions and work-item fallback states. */
+const STATUS_COLOR: Record<MissionStatus | WorkItemStatus, ThemeColor> = {
 	pending: "muted",
 	in_progress: "accent",
+	ready_for_acceptance: "warning",
 	ready_for_review: "warning",
 	accepted: "success",
-	cancelled: "dim",
+	completed: "success",
+	cancelled: "error",
 }
+
+/** Color for each live activity category. */
+const ACTIVITY_COLOR: Record<ActivityPhase, ThemeColor> = {
+	starting: "accent",
+	thinking: "accent",
+	writing: "accent",
+	tool: "warning",
+	waiting: "accent",
+	needs_help: "error",
+	idle: "dim",
+}
+
+/** Fixed-width ASCII frames keep activity rows aligned in every terminal. */
+const SPINNER_FRAMES = ["-", "\\", "|", "/"] as const
 
 /**
  * Absolute, normalized form of a path for comparison. Handles trailing
@@ -176,36 +192,104 @@ function totalItems(counts: MissionSummary["itemCounts"]): number {
 	return Object.values(counts).reduce((sum, count) => sum + count, 0)
 }
 
+/** Choose the tree connector for a row's position in the visible list. */
+function connector(isLast: boolean): string {
+	return isLast ? "┗━" : "┣━"
+}
+
 /** Render the compact mission row used outside a Mission Lead session. */
 export function normalMissionLine(
 	{ mission, sessionAttached }: MissionWidgetRow,
 	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
+	isLast = true,
 ): string {
 	const state = sessionAttached
 		? fg("accent", "Running...")
-		: fg("dim", `Paused[${STATUS_LABEL[mission.status]}]`)
+		: fg(
+				STATUS_COLOR[mission.status],
+				`Paused[${STATUS_LABEL[mission.status]}]`,
+			)
 	const inProgress = fg("accent", String(mission.itemCounts.in_progress))
 	const completed = fg("success", String(mission.itemCounts.accepted))
-	return `${ROW_LEFT_PADDING}┗━ ${fitTitle(mission.title)} (${mission.id}) ${state} (${inProgress} + ${completed} / ${totalItems(mission.itemCounts)})`
+	return `${ROW_LEFT_PADDING}${connector(isLast)} ${fitTitle(mission.title)} (${mission.id}) ${state} (${inProgress} + ${completed} / ${totalItems(mission.itemCounts)})`
 }
 
-function currentAction(activity: ActivityState | undefined): string {
-	if (!activity || activity.phase === "idle") return "Idle"
-	if (activity.phase === "thinking") return "Thinking"
-	if (activity.phase === "writing") return "Writing"
-	return activity.tool?.trim() || "Tool call"
+interface StatePresentation {
+	label: string
+	color: ThemeColor
+}
+
+function spinner(frame: number): string {
+	return SPINNER_FRAMES[Math.abs(frame) % SPINNER_FRAMES.length] ?? "-"
+}
+
+function liveActivityState(
+	activity: ActivityState,
+	spinnerFrame: number,
+): StatePresentation {
+	let label: string
+	switch (activity.phase) {
+		case "starting":
+			label = "Starting"
+			break
+		case "thinking":
+			label = "Thinking"
+			break
+		case "writing":
+			label = "Writing"
+			break
+		case "tool": {
+			const tool = activity.tool?.trim() || "tool"
+			label = `Calling ${tool}`
+			break
+		}
+		case "waiting":
+			label = "Continuing"
+			break
+		case "needs_help":
+			label = "Needs help"
+			break
+		case "idle":
+			label = "Idle"
+			break
+	}
+
+	const animated = activity.phase !== "needs_help" && activity.phase !== "idle"
+	return {
+		label: animated ? `${label} ${spinner(spinnerFrame)}` : label,
+		color: ACTIVITY_COLOR[activity.phase],
+	}
+}
+
+function fallbackState(status: WorkItemStatus): StatePresentation {
+	const label = {
+		pending: "Queued",
+		in_progress: "Waiting",
+		ready_for_review: "Awaiting review",
+		accepted: "Accepted",
+		cancelled: "Cancelled",
+	}[status]
+	return { label, color: STATUS_COLOR[status] }
+}
+
+function currentState(
+	item: WorkItemWidgetRow,
+	spinnerFrame: number,
+): StatePresentation {
+	return item.activity
+		? liveActivityState(item.activity, spinnerFrame)
+		: fallbackState(item.status)
 }
 
 /** Render a work-item row used in the Mission Lead view. */
 export function missionLeadItemLine(
 	item: WorkItemWidgetRow,
 	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
+	isLast = true,
+	spinnerFrame = 0,
 ): string {
-	const status = fg(
-		WORK_ITEM_STATUS_COLOR[item.status],
-		`[${WORK_ITEM_STATUS_LABEL[item.status]}]`,
-	)
-	return `${ROW_LEFT_PADDING}┗━ ${fitTitle(item.title)}${status}: ${fg("dim", currentAction(item.activity))}`
+	const state = currentState(item, spinnerFrame)
+	return `${ROW_LEFT_PADDING}${connector(isLast)} ${fg("muted", `#${item.id}`)} ${fitTitle(item.title)}: ${fg(state.color, state.label)}`
 }
 
 /** Render the mode-specific header. */
@@ -230,13 +314,30 @@ export function commandCenterLines(
 	mode: CommandCenterWidgetMode,
 	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
 	maxRows = MAX_WIDGET_LINES,
+	spinnerFrame = 0,
 ): string[] {
-	const rows =
-		mode.kind === "normal"
-			? mode.rows.map((row) => normalMissionLine(row, fg))
-			: (mode.row.items ?? []).map((item) => missionLeadItemLine(item, fg))
-	if (rows.length <= maxRows) return rows
-	return [...rows.slice(0, maxRows), `… +${rows.length - maxRows} more`]
+	if (mode.kind === "normal") {
+		const rows = mode.rows
+		const visibleRows = rows.slice(0, maxRows)
+		const rendered = visibleRows.map((row, index) =>
+			normalMissionLine(row, fg, index === visibleRows.length - 1),
+		)
+		if (rows.length <= maxRows) return rendered
+		return [...rendered, `… +${rows.length - maxRows} more`]
+	}
+
+	const rows = mode.row.items ?? []
+	const visibleRows = rows.slice(0, maxRows)
+	const rendered = visibleRows.map((row, index) =>
+		missionLeadItemLine(
+			row,
+			fg,
+			index === visibleRows.length - 1,
+			spinnerFrame,
+		),
+	)
+	if (rows.length <= maxRows) return rendered
+	return [...rendered, `… +${rows.length - maxRows} more`]
 }
 
 /** Stable, unstyled content used to skip redundant widget updates. */
@@ -256,10 +357,13 @@ export function renderCommandCenterWidget(
 	fg: (color: ThemeColor, text: string) => string,
 	bold: (text: string) => string,
 	width: number,
+	spinnerFrame = 0,
 ): string[] {
 	return [
 		commandCenterHeader(mode, fg, bold, width),
-		...commandCenterLines(mode, fg).map((line) => truncateToWidth(line, width)),
+		...commandCenterLines(mode, fg, MAX_WIDGET_LINES, spinnerFrame).map(
+			(line) => truncateToWidth(line, width),
+		),
 	]
 }
 
