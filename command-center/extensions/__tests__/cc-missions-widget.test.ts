@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { ThemeColor } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import type { MissionSummary, WorkItemCounts } from "../../core/types"
@@ -18,6 +20,8 @@ import {
 const fg = (color: ThemeColor, text: string) => `<${color}>${text}</${color}>`
 const identity = (_color: ThemeColor, text: string) => text
 const noBold = (text: string) => text
+const worktree = (...parts: string[]) =>
+	join(homedir(), ".command-center", "worktrees", ...parts)
 
 const EMPTY_COUNTS: WorkItemCounts = {
 	pending: 0,
@@ -69,10 +73,7 @@ describe("relatedMissions", () => {
 			"m1",
 		])
 		expect(
-			relatedMissions(
-				missions,
-				"/repo/a/.command-center/worktrees/m1/integration",
-			).map((m) => m.id),
+			relatedMissions(missions, worktree("m1", "integration")).map((m) => m.id),
 		).toEqual(["m1"])
 	})
 
@@ -96,21 +97,11 @@ describe("isInsideMissionWorktrees", () => {
 	const m = mission({ id: "m1", repoPath: "/repo/a" })
 
 	test("matches the integration and owner worktrees, not sibling paths", () => {
-		expect(
-			isInsideMissionWorktrees(
-				m,
-				"/repo/a/.command-center/worktrees/m1/integration",
-			),
-		).toBe(true)
-		expect(
-			isInsideMissionWorktrees(
-				m,
-				"/repo/a/.command-center/worktrees/m1/work-2",
-			),
-		).toBe(true)
-		expect(
-			isInsideMissionWorktrees(m, "/repo/a/.command-center/worktrees/m1x"),
-		).toBe(false)
+		expect(isInsideMissionWorktrees(m, worktree("m1", "integration"))).toBe(
+			true,
+		)
+		expect(isInsideMissionWorktrees(m, worktree("m1", "work-2"))).toBe(true)
+		expect(isInsideMissionWorktrees(m, worktree("m1x"))).toBe(false)
 	})
 })
 

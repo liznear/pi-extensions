@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import {
 	integrationBranch,
 	integrationWorktreeDir,
@@ -12,7 +14,7 @@ import {
 // itemId). No random/stateful components. Owner names key off the stable id,
 // never the title.
 //
-//   worktree root        <repo>/.command-center/worktrees/   (gitignored)
+//   worktree root        $HOME/.command-center/worktrees/
 //   integration branch   cc/<missionId>/integration
 //   lead worktree dir    worktrees/<missionId>/integration
 //   owner branch         cc/<missionId>/work/<itemId>
@@ -22,8 +24,10 @@ import {
 describe("worktree naming", () => {
 	const repo = "/repo"
 
-	test("worktreeRoot is <repo>/.command-center/worktrees/", () => {
-		expect(worktreeRoot(repo)).toBe("/repo/.command-center/worktrees")
+	test("worktreeRoot is the global Command Center worktree directory", () => {
+		const expected = join(homedir(), ".command-center", "worktrees")
+		expect(worktreeRoot(repo)).toBe(expected)
+		expect(worktreeRoot("/another-repo")).toBe(expected)
 	})
 
 	test("integrationBranch is cc/<missionId>/integration", () => {
@@ -32,7 +36,13 @@ describe("worktree naming", () => {
 
 	test("integrationWorktreeDir is worktrees/<missionId>/integration", () => {
 		expect(integrationWorktreeDir(repo, "7k3a9fqa")).toBe(
-			"/repo/.command-center/worktrees/7k3a9fqa/integration",
+			join(
+				homedir(),
+				".command-center",
+				"worktrees",
+				"7k3a9fqa",
+				"integration",
+			),
 		)
 	})
 
@@ -42,7 +52,7 @@ describe("worktree naming", () => {
 
 	test("ownerWorktreeDir is worktrees/<missionId>/work-<itemId>", () => {
 		expect(ownerWorktreeDir(repo, "7k3a9fqa", 3)).toBe(
-			"/repo/.command-center/worktrees/7k3a9fqa/work-3",
+			join(homedir(), ".command-center", "worktrees", "7k3a9fqa", "work-3"),
 		)
 	})
 

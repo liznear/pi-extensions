@@ -11,7 +11,7 @@ import { Orchestrator } from "../core/orchestrator"
 import { PiVisibleLeadSessionRunner } from "../core/session"
 import { FileStore } from "../core/store-file"
 import type { MissionSummary, RoleIdentity, RoleName } from "../core/types"
-import { WorktreeProvisioner } from "../core/worktree/provisioner"
+import { WorktreeProvisioner, worktreeRoot } from "../core/worktree/provisioner"
 import { ccCompletionForCursor } from "./cc-completions"
 import {
 	type ActivityState,
@@ -279,7 +279,7 @@ function visibleRoleForMission(
 ): RoleIdentity | undefined {
 	const cwdNorm = normalizedPath(cwd)
 	const prefix = normalizedPath(
-		path.join(mission.repoPath, ".command-center", "worktrees", mission.id),
+		path.join(worktreeRoot(mission.repoPath), mission.id),
 	)
 	if (cwdNorm !== prefix && !cwdNorm.startsWith(prefix + path.sep)) return
 	const relative = path.relative(prefix, cwdNorm)

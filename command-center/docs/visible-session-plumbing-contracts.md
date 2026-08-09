@@ -48,7 +48,7 @@ mission list:
    events to a mission role.
 3. If `isInsideMissionWorktrees(mission, ctx.cwd)` is false, ignore the mission.
 4. For a matching worktree prefix
-   `<repo>/.command-center/worktrees/<missionId>/`:
+   `$HOME/.command-center/worktrees/<missionId>/`:
    - `integration` or a descendant of `integration` attaches as
      `{ missionId, roleName: "mission_lead" }`.
    - `work-<itemId>` or a descendant of `work-<itemId>` attaches as

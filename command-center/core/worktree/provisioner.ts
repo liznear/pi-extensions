@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process"
 import { readFile, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { promisify } from "node:util"
 import { fileExists } from "../fs"
 
@@ -7,20 +9,23 @@ import { fileExists } from "../fs"
 // Worktree naming (ticket 06 D3) — a pure function of identity (missionId,
 // itemId). No random/stateful components; owner names key off the stable id.
 //
-//   worktree root        <repo>/.command-center/worktrees/   (gitignored)
+//   worktree root        $HOME/.command-center/worktrees/
 //   integration branch   cc/<missionId>/integration
 //   lead worktree dir    worktrees/<missionId>/integration
 //   owner branch         cc/<missionId>/work/<itemId>
 //   owner worktree dir   worktrees/<missionId>/work-<itemId>
+//
+// Worktree checkouts live outside the source repo; repoPath still identifies
+// the source repo used for branch and git operations.
 // ---------------------------------------------------------------------------
 
 const execFileP = promisify(execFile)
 
-const WORKTREE_DIR = ".command-center/worktrees"
+const WORKTREE_DIR = "worktrees"
 
-/** The managed worktree root: `<repo>/.command-center/worktrees/`. */
-export function worktreeRoot(repoPath: string): string {
-	return `${repoPath}/${WORKTREE_DIR}`
+/** The global managed worktree root: `$HOME/.command-center/worktrees/`. */
+export function worktreeRoot(_repoPath: string): string {
+	return join(homedir(), ".command-center", WORKTREE_DIR)
 }
 
 /** Integration branch: `cc/<missionId>/integration`. */
@@ -33,7 +38,7 @@ export function integrationWorktreeDir(
 	repoPath: string,
 	missionId: string,
 ): string {
-	return `${worktreeRoot(repoPath)}/${missionId}/integration`
+	return join(worktreeRoot(repoPath), missionId, "integration")
 }
 
 /** Owner branch: `cc/<missionId>/work/<itemId>`. */
@@ -47,7 +52,7 @@ export function ownerWorktreeDir(
 	missionId: string,
 	itemId: number,
 ): string {
-	return `${worktreeRoot(repoPath)}/${missionId}/work-${itemId}`
+	return join(worktreeRoot(repoPath), missionId, `work-${itemId}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +221,8 @@ export class WorktreeProvisioner implements WorktreeProvider {
 	/**
 	 * Create the lead's Integration Worktree at mission start (ticket 06 D4).
 	 * Cuts `cc/<missionId>/integration` off the repo's current HEAD and checks
-	 * it out into `worktrees/<missionId>/integration`. Idempotent: if the
+	 * it out into `$HOME/.command-center/worktrees/<missionId>/integration`.
+	 * Idempotent: if the
 	 * branch/worktree already exist (e.g. resuming across runs), this is a no-op.
 	 */
 	async createIntegrationWorktree(
@@ -273,7 +279,8 @@ export class WorktreeProvisioner implements WorktreeProvider {
 	/**
 	 * Create an owner worktree lazily on dispatch (ticket 06 D4). Cuts
 	 * `cc/<missionId>/work/<itemId>` off the CURRENT integration tip and checks
-	 * it out into `worktrees/<missionId>/work-<itemId>`. Idempotent.
+	 * it out into `$HOME/.command-center/worktrees/<missionId>/work-<itemId>`.
+	 * Idempotent.
 	 */
 	async createOwnerWorktree(
 		repoPath: string,

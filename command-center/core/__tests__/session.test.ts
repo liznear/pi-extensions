@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type {
 	AgentSessionEvent,
@@ -15,6 +16,7 @@ import {
 } from "../session"
 import { InMemoryStore } from "../store"
 import type { RoleIdentity } from "../types"
+import { worktreeRoot } from "../worktree/provisioner"
 
 const lead: RoleIdentity = { missionId: "7k3a9fqa", roleName: "mission_lead" }
 const owner: RoleIdentity = {
@@ -278,7 +280,7 @@ function visibleCtx(
 	idle = true,
 ): ExtensionContext {
 	return {
-		cwd: "/repo/.command-center/worktrees/7k3a9fqa/integration",
+		cwd: join(worktreeRoot("/repo"), "7k3a9fqa", "integration"),
 		isIdle: () => idle,
 		abort: () => undefined,
 		sessionManager: { getSessionId: () => sessionId },

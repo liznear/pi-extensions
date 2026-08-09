@@ -6,6 +6,7 @@ import type {
 	MissionSummary,
 	WorkItemStatus,
 } from "../core/types"
+import { worktreeRoot } from "../core/worktree/provisioner"
 
 // ---------------------------------------------------------------------------
 // Missions pinned above the input editor
@@ -121,16 +122,14 @@ function normalizePath(p: string): string {
 
 /**
  * The normalized prefix of a mission's worktrees dir:
- * `<repo>/.command-center/worktrees/<missionId>`. A role session running
+ * `$HOME/.command-center/worktrees/<missionId>`. A role session running
  * there (lead = integration, owner = work-N) is attached to the mission.
  */
 function missionWorktreesPrefix(mission: {
 	repoPath: string
 	id: string
 }): string {
-	return normalizePath(
-		path.join(mission.repoPath, ".command-center", "worktrees", mission.id),
-	)
+	return normalizePath(path.join(worktreeRoot(mission.repoPath), mission.id))
 }
 
 /** True when a session cwd is inside this mission's worktrees dir. */
@@ -161,7 +160,7 @@ export function relatedMissions(
 	return missions
 		.filter((m) => {
 			// The session's cwd inside the source repo, or inside this mission's
-			// worktrees (<repo>/.command-center/worktrees/<missionId>/…) — a role
+			// worktrees ($HOME/.command-center/worktrees/<missionId>/…) — a role
 			// session (lead = integration, owner = work-N) counts as attached.
 			if (normalizePath(m.repoPath) === cwdNorm) return true
 			return isInsideMissionWorktrees(m, cwd)

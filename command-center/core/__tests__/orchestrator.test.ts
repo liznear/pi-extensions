@@ -10,7 +10,7 @@ import { Orchestrator } from "../orchestrator"
 import { FakeSessionRunner, PiVisibleLeadSessionRunner } from "../session"
 import { InMemoryStore } from "../store"
 import type { WorkItem } from "../types"
-import { FakeWorktreeProvider } from "../worktree/provisioner"
+import { FakeWorktreeProvider, worktreeRoot } from "../worktree/provisioner"
 
 // ---------------------------------------------------------------------------
 // Orchestrator integration tests.
@@ -499,7 +499,7 @@ class ScriptedVisiblePi {
 
 function visibleContext(sessionId = "visible-lead-session"): ExtensionContext {
 	return {
-		cwd: "/fake-repo/.command-center/worktrees/visible1/integration",
+		cwd: `${worktreeRoot("/fake-repo")}/visible1/integration`,
 		isIdle: () => true,
 		abort: () => undefined,
 		sessionManager: { getSessionId: () => sessionId },
@@ -2080,13 +2080,13 @@ describe("Orchestrator — driver lock (multi-process)", () => {
 
 		await orch.registerMission(missionId)
 		expect(orch.cwdFor({ missionId, roleName: "mission_lead" })).toBe(
-			"/fake-repo/.command-center/worktrees/attach-target/integration",
+			`${worktreeRoot("/fake-repo")}/attach-target/integration`,
 		)
 
 		// Idempotent: a second registration is a no-op.
 		await orch.registerMission(missionId)
 		expect(orch.cwdFor({ missionId, roleName: "mission_lead" })).toBe(
-			"/fake-repo/.command-center/worktrees/attach-target/integration",
+			`${worktreeRoot("/fake-repo")}/attach-target/integration`,
 		)
 	})
 
