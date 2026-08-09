@@ -71,7 +71,7 @@ describe("ccCompletionForCursor — subcommand position", () => {
 				value: "attach",
 				label: "attach",
 				description:
-					"Attach to a mission session: /cc attach <missionId> [workItemId]",
+					"Attach to the Mission Lead session: /cc attach <missionId>",
 			},
 		])
 	})

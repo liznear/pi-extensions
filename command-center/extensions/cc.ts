@@ -5,11 +5,7 @@ import type {
 	ExtensionContext,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
-import {
-	getMarkdownTheme,
-	SessionManager,
-} from "@earendil-works/pi-coding-agent"
-import { Markdown } from "@earendil-works/pi-tui"
+import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { FileDriverLock } from "../core/driver-lock"
 import { Orchestrator } from "../core/orchestrator"
 import { PiVisibleLeadSessionRunner } from "../core/session"
@@ -19,13 +15,12 @@ import { WorktreeProvisioner } from "../core/worktree/provisioner"
 import { ccCompletionForCursor } from "./cc-completions"
 import {
 	type ActivityState,
-	buildMissionsMarkdown,
-	isInsideMissionWorktrees,
+	type CommandCenterWidgetMode,
+	commandCenterSkeleton,
 	MISSIONS_WIDGET_KEY,
 	type MissionWidgetRow,
-	missionsHeader,
 	relatedMissions,
-	stripTableBorders,
+	renderCommandCenterWidget,
 } from "./cc-missions-widget"
 
 // Module-level state survives session switches (because the Node module stays in memory).
@@ -211,7 +206,7 @@ async function requireAttachedLeadMission(
 	const mission = missions.find((m) => isLeadAttachedToMission(m, ctx.cwd))
 	if (!mission) {
 		await ctx.ui.notify(
-			"You are not attached to a mission lead session. Run /cc attach <missionId> (without a workItemId) or switch to the mission's integration worktree.",
+			"You are not attached to a mission lead session. Run /cc attach <missionId> or switch to the mission's integration worktree.",
 			"error",
 		)
 	}
@@ -328,73 +323,72 @@ async function evaluateDriveAttachment(
 }
 
 /**
- * Re-render the missions pinned above the input editor for the current
- * session. Missions whose repo source path equals the session's cwd are
- * shown; an empty list clears the widget. Called on session_start, on
- * orchestrator events that change mission state, and after every /cc command.
+ * Re-render the Command Center widget for the current session. A normal
+ * session gets related missions; a Mission Lead session gets every work item
+ * in its mission. Called on session_start, state events, and /cc commands.
  */
 async function refreshMissionsWidget(): Promise<void> {
 	const ctx = widgetCtx
 	if (!ctx?.hasUI || !orch) return
 	const missions = await orch.store.listMissions()
-	const related = relatedMissions(missions, ctx.cwd)
-	if (related.length === 0) {
-		// No missions for this repo — clear the widget. Skip the redundant call
-		// when it's already cleared (repeated poll ticks call this every 5s).
-		if (lastWidgetSkeleton === undefined) return
-		ctx.ui.setWidget(MISSIONS_WIDGET_KEY, undefined)
-		lastWidgetSkeleton = undefined
-		return
-	}
-	// "Session attached" = a live process holds the mission's driver lock
-	// (a pi session is currently driving the mission). Items come from the
-	// persisted plan; live activity comes from the forwarded session events.
-	// A mission's task list is expanded only when the current session is
-	// attached to it (cwd inside its worktrees dir); otherwise missions show
-	// as single rows.
+	const visibleRole = await currentVisibleRole(ctx)
 	const driverLock = orch.driverLock
 	const store = orch.store
-	const rows: MissionWidgetRow[] = await Promise.all(
-		related.map(async (mission) => {
-			const sessionAttached = (await driverLock.status(mission.id)).held
-			if (!isInsideMissionWorktrees(mission, ctx.cwd)) {
-				return { mission, sessionAttached }
-			}
-			const plan = await store.readPlan(mission.id)
-			return {
+	let mode: CommandCenterWidgetMode
+
+	if (visibleRole?.roleName === "mission_lead") {
+		const mission = missions.find((item) => item.id === visibleRole.missionId)
+		if (!mission) {
+			if (lastWidgetSkeleton === undefined) return
+			ctx.ui.setWidget(MISSIONS_WIDGET_KEY, undefined)
+			lastWidgetSkeleton = undefined
+			return
+		}
+		const plan = await store.readPlan(mission.id)
+		const missionLock = await driverLock.status(mission.id)
+		mode = {
+			kind: "mission-lead",
+			row: {
 				mission,
-				sessionAttached,
+				sessionAttached: missionLock.held,
 				items: (plan?.items ?? []).map((item) => ({
 					id: item.id,
 					title: item.title,
 					status: item.status,
 					activity: liveActivity.get(activityKey(mission.id, item.id)),
 				})),
-			}
-		}),
-	)
-	// Skip the re-render when nothing visible changed — delta streams keep
-	// scheduling refreshes but rarely change the table (only phase/tool do).
-	const skeleton = buildMissionsMarkdown(rows)
+			},
+		}
+	} else {
+		const related = relatedMissions(missions, ctx.cwd)
+		if (related.length === 0) {
+			// No missions for this repo — clear the widget. Skip the redundant call
+			// when it is already cleared (poll ticks call this every 5s).
+			if (lastWidgetSkeleton === undefined) return
+			ctx.ui.setWidget(MISSIONS_WIDGET_KEY, undefined)
+			lastWidgetSkeleton = undefined
+			return
+		}
+		const rows: MissionWidgetRow[] = await Promise.all(
+			related.map(async (mission) => {
+				const missionLock = await driverLock.status(mission.id)
+				return { mission, sessionAttached: missionLock.held }
+			}),
+		)
+		mode = { kind: "normal", rows }
+	}
+
+	// Delta streams keep scheduling refreshes, so avoid replacing the widget
+	// unless its unstyled visible content actually changed.
+	const skeleton = commandCenterSkeleton(mode)
 	if (skeleton === lastWidgetSkeleton) return
 	lastWidgetSkeleton = skeleton
-	// Render the missions as a markdown table: the Markdown component owns the
-	// column sizing, cell wrapping and narrow-width fallback. Strip the
-	// table's horizontal borders, header and outer walls, indent the rows,
-	// and prepend the mini-task-style Command Center header line.
 	ctx.ui.setWidget(MISSIONS_WIDGET_KEY, (_tui, theme) => {
 		const fg = (color: ThemeColor, text: string) => theme.fg(color, text)
-		const markdown = buildMissionsMarkdown(rows, fg)
-		const md = new Markdown(markdown, 0, 0, getMarkdownTheme())
 		return {
-			render: (width) => [
-				missionsHeader(rows, fg, (text) => theme.bold(text), width),
-				...stripTableBorders(md.render(width)).map((line) =>
-					// Rows sit under the header with a left indent.
-					line ? `  ${line}` : line,
-				),
-			],
-			invalidate: () => md.invalidate(),
+			render: (width) =>
+				renderCommandCenterWidget(mode, fg, (text) => theme.bold(text), width),
+			invalidate: () => {},
 		}
 	})
 }
@@ -650,21 +644,23 @@ export default function (pi: ExtensionAPI) {
 				await orch.deleteMission(missionId)
 				await ctx.ui.notify(`Deleted mission ${missionId}`, "info")
 			} else if (cmd === "attach") {
-				// /cc attach <missionId> [workItemId]
-				// Attaches to the mission lead; with a work item id, the item's owner.
+				// /cc attach <missionId> — only Mission Lead sessions are visible.
+				// Work Item Owner sessions remain hidden from the human UI.
 				const missionId = argsList[1]
-				const workItemId = argsList[2] ? parseInt(argsList[2], 10) : undefined
-
-				if (!missionId) {
+				if (argsList[2]) {
 					await ctx.ui.notify(
-						"Usage: /cc attach <missionId> [workItemId]",
+						"Attaching to Work Item Owner sessions is not supported; attach to the Mission Lead instead.",
 						"error",
 					)
 					return
 				}
 
-				const roleName: RoleName =
-					workItemId !== undefined ? "work_item_owner" : "mission_lead"
+				if (!missionId) {
+					await ctx.ui.notify("Usage: /cc attach <missionId>", "error")
+					return
+				}
+
+				const roleName: RoleName = "mission_lead"
 
 				// Multi-process guard: attaching to a mission another live
 				// process is driving would race concurrent writers on the role's
@@ -682,7 +678,7 @@ export default function (pi: ExtensionAPI) {
 				// session_start (see the auto-bind there). Owners stay on hidden
 				// sessions; in_progress missions are driven and already bind on
 				// attach — bindVisibleLead no-ops for those anyway.
-				await attachToRole(ctx, orch, missionId, roleName, workItemId)
+				await attachToRole(ctx, orch, missionId, roleName)
 			} else if (cmd === "resume") {
 				// /cc resume — re-drive the mission whose lead session is visible.
 				// Explicit takeover: force-acquires the driver lock; a displaced

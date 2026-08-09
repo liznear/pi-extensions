@@ -1,6 +1,6 @@
 import path from "node:path"
 import type { ThemeColor } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { truncateToWidth } from "@earendil-works/pi-tui"
 import type {
 	MissionStatus,
 	MissionSummary,
@@ -14,28 +14,19 @@ import type {
 // repo source path equals the session's cwd above the input editor, so the
 // missions that own this checkout stay visible without /cc list.
 //
-// The widget is a markdown table built here and rendered by pi-tui's Markdown
-// component, which owns the width-aware column sizing, cell wrapping and the
-// narrow-terminal fallback. This module is pure (mirrors cc-completions.ts /
-// cc-highlight.ts): it builds the markdown string and the stripTableBorders /
-// missionsHeader transforms; cc.ts wires them into the setWidget UI (strips
-// the table's borders/header/walls, indents the rows, and prepends the
-// Command Center header line styled like the mini-task widget).
-//
-// Table columns: id | status | session attached | title. "Session attached"
-// is derived from the mission's driver lock file (a live holder = a pi
-// process is currently driving the mission). The work items of a mission are
-// shown only when the session is attached to it (cwd inside its worktrees
-// dir) — the main repo view stays mission-level.
+// The widget has two views: a normal repo view with one compact row per
+// related mission, and a Mission Lead view with one row per work item. The
+// renderers below are pure so cc.ts only has to select the view from the
+// visible session's role and supply the current persisted/live data.
 // ---------------------------------------------------------------------------
 
 /** Widget key used with ctx.ui.setWidget — the pinned missions list. */
 export const MISSIONS_WIDGET_KEY = "cc-missions"
 
-/** Title shown in the widget's top border. */
+/** Title shown in the widget header. */
 export const MISSIONS_WIDGET_TITLE = "Command Center"
 
-/** Cap the pinned rows at this many (the renderer wraps titles itself). */
+/** Cap the number of visible widget rows before a "+N more" line. */
 export const MAX_WIDGET_LINES = 20
 
 /** Cap a single title's length so a pathological title can't balloon the widget. */
@@ -48,7 +39,7 @@ export interface ActivityState {
 	tool?: string
 }
 
-/** A work item row nested under its mission in the combined widget. */
+/** A work item row in the Mission Lead widget. */
 export interface WorkItemWidgetRow {
 	id: number
 	title: string
@@ -57,7 +48,7 @@ export interface WorkItemWidgetRow {
 	activity?: ActivityState
 }
 
-/** A mission row in the pinned table: the mission plus its live-driver state. */
+/** A mission row in the widget: the mission plus its live-driver state. */
 export interface MissionWidgetRow {
 	mission: MissionSummary
 	/** True when a live process holds the mission's driver lock (session attached). */
@@ -84,15 +75,6 @@ const STATUS_LABEL: Record<MissionStatus, string> = {
 	cancelled: "Cancelled",
 }
 
-/** Per-status display color. */
-const STATUS_COLOR: Record<MissionStatus, ThemeColor> = {
-	pending: "muted",
-	in_progress: "accent",
-	ready_for_acceptance: "warning",
-	completed: "success",
-	cancelled: "dim",
-}
-
 /** Readable, title-cased labels for work-item statuses. */
 const WORK_ITEM_STATUS_LABEL: Record<WorkItemStatus, string> = {
 	pending: "Pending",
@@ -109,59 +91,6 @@ const WORK_ITEM_STATUS_COLOR: Record<WorkItemStatus, ThemeColor> = {
 	ready_for_review: "warning",
 	accepted: "success",
 	cancelled: "dim",
-}
-
-/**
- * Fixed visible width of the STATUS column: every status cell is padded to
- * this width so a longer label (e.g. "Ready for acceptance") can't widen
- * the column and shift the columns to its right.
- */
-const STATUS_CELL_WIDTH = 20
-
-/**
- * Fixed visible width of the SESSION column: every session cell is padded
- * to this width so the activity state ("💭 thinking…" needs the most) can't
- * widen the column. Tool names are truncated to fit.
- */
-const SESSION_CELL_WIDTH = 12
-
-/** Visible width of the "🔧 " tool-activity prefix. */
-const TOOL_PREFIX_WIDTH = 3
-
-/**
- * Fit a tool name into the SESSION cell (minus its "🔧 " prefix), truncating
- * with an ellipsis when it would otherwise overflow. Width is measured with
- * `visibleWidth` so wide/emoji tool names can't overrun the fixed column.
- */
-function fitToolName(tool: string): string {
-	const budget = SESSION_CELL_WIDTH - TOOL_PREFIX_WIDTH
-	if (visibleWidth(tool) <= budget) return tool
-	const ellipsis = "…"
-	const target = budget - visibleWidth(ellipsis)
-	let result = ""
-	for (const { segment } of new Intl.Segmenter().segment(tool)) {
-		if (visibleWidth(result + segment) > target) break
-		result += segment
-	}
-	return result + ellipsis
-}
-
-/** Pad `text` with trailing spaces to a fixed visible width (ANSI-aware). */
-function padCell(text: string, width: number): string {
-	const padding = Math.max(0, width - visibleWidth(text))
-	return text + " ".repeat(padding)
-}
-
-/** Render a work item's live activity cell (dim "—" when idle/absent). */
-function activityCell(
-	activity: ActivityState | undefined,
-	fg: (color: ThemeColor, text: string) => string,
-): string {
-	if (!activity || activity.phase === "idle") return fg("dim", "—")
-	if (activity.phase === "thinking") return fg("accent", "💭 thinking…")
-	if (activity.phase === "writing") return fg("accent", "✍️ writing…")
-	const tool = fitToolName((activity.tool ?? "tool").trim())
-	return fg("accent", `🔧 ${tool}`)
 }
 
 /**
@@ -227,115 +156,110 @@ export function relatedMissions(
 		})
 }
 
-/** Escape markdown table syntax (pipes, backslashes) in a cell value. */
-function escapeCell(text: string): string {
-	return text.replace(/[\\|]/g, (c) => `\\${c}`)
-}
-
-/** Cap an over-long title with an ellipsis (the renderer wraps the rest). */
+/** Cap an over-long title with an ellipsis. */
 function fitTitle(title: string): string {
 	if (title.length <= MAX_TITLE_CHARS) return title
 	return `${title.slice(0, MAX_TITLE_CHARS)}…`
 }
 
-/** Identity fg: buildMissionsMarkdown's default when no theme is available. */
+/** Identity fg: renderers' default when no theme is available. */
 const IDENTITY_FG = (_color: ThemeColor, text: string) => text
 
-/**
- * Build the markdown document for the pinned-missions widget: a (dummy)
- * table header row required by GFM syntax, then one row per mission followed
- * by its work-item rows, capped at `maxRows` total rows (default
- * MAX_WIDGET_LINES) with a trailing "… +N more" row. The header row is
- * dropped at render time (stripTableBorders); the widget's header line frames
- * the table in the UI layer. Rows are prefixed with mini-task-style tree
- * branches inside the first cell: `┣━` for every row but the last, `┗━` for
- * the last, and work items hang off their mission with a `┃` continuation
- * (kept even for the last mission, so the renderer can't strip it), keeping
- * the columns aligned after the walls are stripped.
- *
- * `fg` styles the status and session cells with ANSI colors (the Markdown
- * renderer passes cell text through, and its width math ignores ANSI).
- */
-function missionLine(
+/** The two supported widget views. */
+export type CommandCenterWidgetMode =
+	| { kind: "normal"; rows: readonly MissionWidgetRow[] }
+	| { kind: "mission-lead"; row: MissionWidgetRow }
+
+function totalItems(counts: MissionSummary["itemCounts"]): number {
+	return Object.values(counts).reduce((sum, count) => sum + count, 0)
+}
+
+/** Render the compact mission row used outside a Mission Lead session. */
+export function normalMissionLine(
 	{ mission, sessionAttached }: MissionWidgetRow,
-	fg: (color: ThemeColor, text: string) => string,
+	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
 ): string {
-	const title = escapeCell(fitTitle(mission.title))
-	const status = padCell(
-		fg(STATUS_COLOR[mission.status], STATUS_LABEL[mission.status]),
-		STATUS_CELL_WIDTH,
-	)
-	const session = padCell(
-		fg(
-			sessionAttached ? "accent" : "dim",
-			sessionAttached ? "attached" : "detached",
-		),
-		SESSION_CELL_WIDTH,
-	)
-	return `| ${mission.id} | ${status} | ${session} | ${title} |`
+	const state = sessionAttached
+		? fg("accent", "Running...")
+		: fg("dim", `Paused[${STATUS_LABEL[mission.status]}]`)
+	const inProgress = fg("accent", String(mission.itemCounts.in_progress))
+	const completed = fg("success", String(mission.itemCounts.accepted))
+	return `┗━ ${fitTitle(mission.title)}(${mission.id}) ${state} (${inProgress} + ${completed} / ${totalItems(mission.itemCounts)})`
 }
 
-function workItemLine(
+function currentAction(activity: ActivityState | undefined): string {
+	if (!activity || activity.phase === "idle") return "Idle"
+	if (activity.phase === "thinking") return "Thinking"
+	if (activity.phase === "writing") return "Writing"
+	return activity.tool?.trim() || "Tool call"
+}
+
+/** Render a work-item row used in the Mission Lead view. */
+export function missionLeadItemLine(
 	item: WorkItemWidgetRow,
-	fg: (color: ThemeColor, text: string) => string,
+	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
 ): string {
-	const title = escapeCell(fitTitle(item.title))
-	const status = padCell(
-		fg(
-			WORK_ITEM_STATUS_COLOR[item.status],
-			WORK_ITEM_STATUS_LABEL[item.status],
-		),
-		STATUS_CELL_WIDTH,
+	const status = fg(
+		WORK_ITEM_STATUS_COLOR[item.status],
+		`[${WORK_ITEM_STATUS_LABEL[item.status]}]`,
 	)
-	const session = padCell(activityCell(item.activity, fg), SESSION_CELL_WIDTH)
-	return `| #${item.id} | ${status} | ${session} | ${title} |`
+	return `┗━ ${fitTitle(item.title)}${status}: ${fg("dim", currentAction(item.activity))}`
 }
 
-export function buildMissionsMarkdown(
-	rows: readonly MissionWidgetRow[],
+/** Render the mode-specific header. */
+export function commandCenterHeader(
+	mode: CommandCenterWidgetMode,
+	fg: (color: ThemeColor, text: string) => string,
+	bold: (text: string) => string,
+	width: number,
+): string {
+	if (mode.kind === "mission-lead") {
+		const { mission } = mode.row
+		return truncateToWidth(
+			`${fg("accent", bold(MISSIONS_WIDGET_TITLE))} - Mission Lead @ ${fitTitle(mission.title)}(${mission.id})`,
+			width,
+		)
+	}
+	return missionsHeader(mode.rows, fg, bold, width)
+}
+
+/** Render rows for either widget mode, capped to avoid an oversized widget. */
+export function commandCenterLines(
+	mode: CommandCenterWidgetMode,
 	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
 	maxRows = MAX_WIDGET_LINES,
-): string {
-	// Flatten each mission into its row plus its work-item rows; the cap counts
-	// both, so one mission can't crowd out the rest. Track each line's depth
-	// (mission 0, work item 1) so the tree branches can be drawn afterwards.
-	const lines: Array<{ line: string; depth: number }> = []
-	let hidden = 0
-	for (const row of rows) {
-		const block = [{ line: missionLine(row, fg), depth: 0 }]
-		for (const item of row.items ?? []) {
-			block.push({ line: workItemLine(item, fg), depth: 1 })
-		}
-		const remaining = maxRows - lines.length
-		if (remaining <= 0) {
-			hidden += block.length
-		} else if (block.length <= remaining) {
-			lines.push(...block)
-		} else {
-			lines.push(...block.slice(0, remaining))
-			hidden += block.length - remaining
-		}
-	}
-	// Mini-task-style tree branches in the first cell: `┣━` for every row but
-	// the last, `┗━` for the last. Work items indent under their mission with
-	// a `┃` continuation, kept even for the last mission (the Markdown
-	// renderer would strip a space-only continuation, breaking the tree).
-	const branched = lines.map(({ line, depth }, index) => {
-		const branch = index === lines.length - 1 ? "┗━ " : "┣━ "
-		const prefix = depth === 0 ? branch : `┃  ${branch}`
-		return line.replace(/^\| /, `| ${prefix}`)
-	})
-	const out = [
-		"| ID | STATUS | SESSION | TITLE |",
-		"| --- | --- | --- | --- |",
-		...branched,
-	]
-	if (hidden > 0) out.push(`|  |  |  | … +${hidden} more |`)
-	return out.join("\n")
+): string[] {
+	const rows =
+		mode.kind === "normal"
+			? mode.rows.map((row) => normalMissionLine(row, fg))
+			: (mode.row.items ?? []).map((item) => missionLeadItemLine(item, fg))
+	if (rows.length <= maxRows) return rows
+	return [...rows.slice(0, maxRows), `… +${rows.length - maxRows} more`]
 }
 
-/** A line consisting solely of table box-drawing characters (a border rule). */
-const TABLE_BORDER_RE = /^[─┬┼┴┌├└┐┤┘]+$/
+/** Stable, unstyled content used to skip redundant widget updates. */
+export function commandCenterSkeleton(mode: CommandCenterWidgetMode): string {
+	const header =
+		mode.kind === "mission-lead"
+			? `${mode.row.mission.id}:${mode.row.mission.title}`
+			: mode.rows
+					.map((row) => `${row.mission.id}:${row.mission.title}`)
+					.join(",")
+	return `${mode.kind}:${header}\n${commandCenterLines(mode).join("\n")}`
+}
+
+/** Build the final width-aware widget lines. */
+export function renderCommandCenterWidget(
+	mode: CommandCenterWidgetMode,
+	fg: (color: ThemeColor, text: string) => string,
+	bold: (text: string) => string,
+	width: number,
+): string[] {
+	return [
+		commandCenterHeader(mode, fg, bold, width),
+		...commandCenterLines(mode, fg).map((line) => truncateToWidth(line, width)),
+	]
+}
 
 /**
  * The widget's header line, styled like the mini-task widget: a bold accent
@@ -359,34 +283,4 @@ export function missionsHeader(
 		summary,
 	)}`
 	return truncateToWidth(title, width)
-}
-
-/**
- * Turn a rendered markdown table into the widget's open table: drop the
- * horizontal border rules (top, separator, bottom), the header row and the
- * outer `│` walls, keeping the inner column separators and per-column padding
- * (so wrapped continuation lines stay aligned). Tolerates the renderer's
- * line padding.
- */
-export function stripTableBorders(lines: readonly string[]): string[] {
-	let headerDropped = false
-	const out: string[] = []
-	for (const line of lines) {
-		if (TABLE_BORDER_RE.test(line.trim())) continue
-		if (!line.includes("│")) {
-			out.push(line.trimEnd())
-			continue
-		}
-		// The first pipe line is the (dummy) markdown header row — drop it.
-		if (!headerDropped) {
-			headerDropped = true
-			continue
-		}
-		// Row line: "│ cell │ cell │" — drop the outer walls, keep the
-		// ` │ ` column separators; empty leading cells keep the indent.
-		// Regex (not slice) so rows the renderer padded to the full width
-		// with trailing spaces still lose their walls.
-		out.push(line.replace(/^ *│ /, "").replace(/ │ *$/, "").trimEnd())
-	}
-	return out
 }

@@ -50,7 +50,7 @@ const SUBCOMMANDS: readonly Subcommand[] = [
 	},
 	{
 		name: "attach",
-		usage: "Attach to a mission session: /cc attach <missionId> [workItemId]",
+		usage: "Attach to the Mission Lead session: /cc attach <missionId>",
 	},
 	{ name: "accept", usage: "Accept a mission: /cc accept <missionId>" },
 	{
