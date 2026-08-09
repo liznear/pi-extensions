@@ -22,11 +22,49 @@ import {
 	relatedMissions,
 	renderCommandCenterWidget,
 } from "./cc-missions-widget"
+import {
+	formatTerminalActivityTitle,
+	formatTerminalTitle,
+} from "./cc-terminal-status"
 
 // Module-level state survives session switches (because the Node module stays in memory).
 let orch: Orchestrator | null = null
 /** The live session context, refreshed on every session_start (widget target). */
 let widgetCtx: ExtensionContext | undefined
+/** The extension API used to emit terminal-level mission activity signals. */
+let extensionPi: ExtensionAPI | undefined
+/** Base title before the terminal-level working marker is added. */
+let terminalBaseTitle: string | undefined
+/** Last title sent to the terminal, to avoid redundant OSC updates. */
+let lastTerminalTitle: string | undefined
+/** Mission activity is independent from the visible Pi agent turn state. */
+let terminalMissionWorking = false
+
+/** Update the terminal title without starting or keeping an LLM turn alive. */
+function refreshTerminalActivityTitle(ctx: ExtensionContext): void {
+	if (!ctx.hasUI || !extensionPi) return
+	const baseTitle =
+		terminalBaseTitle ??
+		formatTerminalTitle(extensionPi.getSessionName(), ctx.cwd)
+	const title = formatTerminalActivityTitle(baseTitle, terminalMissionWorking)
+	if (title === lastTerminalTitle) return
+	ctx.ui.setTitle(title)
+	lastTerminalTitle = title
+}
+
+/** Set the mission-level activity signal consumed by terminal hosts. */
+function setTerminalMissionActivity(
+	ctx: ExtensionContext,
+	working: boolean,
+): void {
+	terminalMissionWorking = working
+	refreshTerminalActivityTitle(ctx)
+}
+
+type SessionInfoChangedEvent = {
+	type: "session_info_changed"
+	name: string | undefined
+}
 
 /** Throttle for delta-driven widget refreshes (stream chunks coalesce here). */
 const WIDGET_REFRESH_MS = 200
@@ -348,10 +386,12 @@ async function refreshMissionsWidget(): Promise<void> {
 	const driverLock = orch.driverLock
 	const store = orch.store
 	let mode: CommandCenterWidgetMode
+	let terminalWorking = false
 
 	if (visibleRole?.roleName === "mission_lead") {
 		const mission = missions.find((item) => item.id === visibleRole.missionId)
 		if (!mission) {
+			setTerminalMissionActivity(ctx, false)
 			if (lastWidgetSkeleton === undefined) return
 			ctx.ui.setWidget(MISSIONS_WIDGET_KEY, undefined)
 			lastWidgetSkeleton = undefined
@@ -359,6 +399,7 @@ async function refreshMissionsWidget(): Promise<void> {
 		}
 		const plan = await store.readPlan(mission.id)
 		const missionLock = await driverLock.status(mission.id)
+		terminalWorking = mission.status === "in_progress" && missionLock.held
 		mode = {
 			kind: "mission-lead",
 			row: {
@@ -375,6 +416,7 @@ async function refreshMissionsWidget(): Promise<void> {
 	} else {
 		const related = relatedMissions(missions, ctx.cwd)
 		if (related.length === 0) {
+			setTerminalMissionActivity(ctx, false)
 			// No missions for this repo — clear the widget. Skip the redundant call
 			// when it is already cleared (poll ticks call this every 5s).
 			if (lastWidgetSkeleton === undefined) return
@@ -390,6 +432,8 @@ async function refreshMissionsWidget(): Promise<void> {
 		)
 		mode = { kind: "normal", rows }
 	}
+
+	setTerminalMissionActivity(ctx, terminalWorking)
 
 	// Delta streams keep scheduling refreshes, so avoid replacing the widget
 	// unless its unstyled visible content actually changed.
@@ -423,7 +467,27 @@ async function refreshMissionsWidget(): Promise<void> {
 }
 
 export default function (pi: ExtensionAPI) {
+	extensionPi = pi
+
+	// `session_info_changed` is available in the runtime even when older SDK
+	// typings do not include it. Track the base title so the mission marker does
+	// not erase titles set by /name or the auto-title extension.
+	const onSessionInfoChanged = pi.on as unknown as (
+		event: "session_info_changed",
+		handler: (event: SessionInfoChangedEvent, ctx: ExtensionContext) => void,
+	) => void
+	onSessionInfoChanged("session_info_changed", (event, ctx) => {
+		terminalBaseTitle = formatTerminalTitle(event.name, ctx.cwd)
+		lastTerminalTitle = undefined
+		refreshTerminalActivityTitle(ctx)
+	})
+
 	pi.on("session_start", async (_event, ctx) => {
+		terminalBaseTitle = formatTerminalTitle(pi.getSessionName(), ctx.cwd)
+		lastTerminalTitle = undefined
+		terminalMissionWorking = false
+		refreshTerminalActivityTitle(ctx)
+
 		if (!orch) {
 			const store = new FileStore()
 			orch = new Orchestrator({
@@ -594,9 +658,13 @@ export default function (pi: ExtensionAPI) {
 		queueAttachmentGate(undefined)
 	})
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
 		stopWidgetPolling()
 		queueAttachmentGate(undefined)
+		terminalMissionWorking = false
+		refreshTerminalActivityTitle(ctx)
+		terminalBaseTitle = undefined
+		lastTerminalTitle = undefined
 		// The runner clears extension widgets on teardown; dropping the context
 		// stops background-drive events from touching a torn-down UI. The next
 		// session_start re-establishes it.
