@@ -94,6 +94,8 @@ describe("mission_lead profile", () => {
 		expect(prompt).toContain("Mission Lead")
 		expect(prompt).toMatch(/inspect/i)
 		expect(prompt).toMatch(/review_work_item/)
+		expect(prompt).toMatch(/clean|untracked|stale/i)
+		expect(prompt).toMatch(/actionable|evidence|validation/i)
 		// the lead is explicitly told it has NO raw merge (the accept merge is the
 		// Orchestrator's effect) — the constraint line forbids merging.
 		expect(prompt).toMatch(/no raw git merge/i)
@@ -135,6 +137,9 @@ describe("work_item_owner profile", () => {
 		expect(prompt).toMatch(/request_review/)
 		expect(prompt).toMatch(/substantive/i)
 		expect(prompt).toMatch(/worktree|isolated/i)
+		expect(prompt).toMatch(/git status --porcelain/i)
+		expect(prompt).toMatch(/commit/i)
+		expect(prompt).toMatch(/acceptance criteria|validation/i)
 	})
 })
 

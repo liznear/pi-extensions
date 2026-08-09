@@ -1,4 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+	afterEach,
+	beforeEach,
+	test as bunTest,
+	describe,
+	expect,
+} from "bun:test"
 import { readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -23,6 +29,7 @@ import {
 let repo: string
 let prov: WorktreeProvisioner
 const repos: string[] = []
+const test = bunTest.serial
 
 beforeEach(async () => {
 	repo = await mkdtemp("cc-repo")
@@ -38,11 +45,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	for (const r of repos.splice(0)) {
+		for (const itemId of [1, 2, 3]) {
+			await prov.removeOwnerWorktree(r, MISSION, itemId)
+		}
+		await prov.removeIntegrationWorktree(r, MISSION)
 		await rm(r, { recursive: true, force: true })
 	}
 })
 
-const MISSION = "7k3a9fqa"
+const MISSION = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 async function mkdtemp(prefix: string): Promise<string> {
 	const dir = join(tmpdir(), `${prefix}.${Math.random().toString(36).slice(2)}`)
@@ -166,6 +177,60 @@ describe("WorktreeProvisioner — owner worktree", () => {
 		await expect(
 			prov.removeOwnerWorktree(repo, MISSION, 1),
 		).resolves.toBeUndefined()
+	})
+})
+
+describe("WorktreeProvisioner — review readiness", () => {
+	test("accepts a clean committed owner branch based on integration", async () => {
+		await prov.createIntegrationWorktree(repo, MISSION)
+		const ownerDir = await prov.createOwnerWorktree(repo, MISSION, 1)
+		await writeFile(`${ownerDir}/feature.ts`, "export const x = 1\\n")
+		await $`git add -A && git commit -qm feat`.cwd(ownerDir).quiet()
+
+		expect(await prov.reviewReadiness(repo, MISSION, 1, false)).toEqual({
+			ready: true,
+		})
+	})
+
+	test("rejects dirty or untracked owner work", async () => {
+		await prov.createIntegrationWorktree(repo, MISSION)
+		const ownerDir = await prov.createOwnerWorktree(repo, MISSION, 1)
+		await writeFile(`${ownerDir}/feature.ts`, "export const x = 1\\n")
+
+		const result = await prov.reviewReadiness(repo, MISSION, 1, false)
+		if (result.ready) throw new Error("expected dirty worktree to be rejected")
+		expect(result.reason).toMatch(/commit|clean|untracked/i)
+	})
+
+	test("rejects an owner branch that is stale relative to integration", async () => {
+		await prov.createIntegrationWorktree(repo, MISSION)
+		const ownerDir = await prov.createOwnerWorktree(repo, MISSION, 1)
+		await writeFile(`${ownerDir}/feature.ts`, "export const x = 1\\n")
+		await $`git add -A && git commit -qm feat`.cwd(ownerDir).quiet()
+
+		const integDir = integrationWorktreeDir(repo, MISSION)
+		await writeFile(`${integDir}/integration.ts`, "export const y = 1\\n")
+		await $`git add -A && git commit -qm integ`.cwd(integDir).quiet()
+
+		const result = await prov.reviewReadiness(repo, MISSION, 1, false)
+		if (result.ready) throw new Error("expected stale branch to be rejected")
+		expect(result.reason).toMatch(/integration|sync|stale/i)
+	})
+
+	test("allows an explicitly no-code item with an empty branch diff", async () => {
+		await prov.createIntegrationWorktree(repo, MISSION)
+		await prov.createOwnerWorktree(repo, MISSION, 1)
+		expect(await prov.reviewReadiness(repo, MISSION, 1, true)).toEqual({
+			ready: true,
+		})
+	})
+
+	test("rejects an empty branch diff unless it is explicitly no-code", async () => {
+		await prov.createIntegrationWorktree(repo, MISSION)
+		await prov.createOwnerWorktree(repo, MISSION, 1)
+		const result = await prov.reviewReadiness(repo, MISSION, 1, false)
+		if (result.ready) throw new Error("expected empty diff to be rejected")
+		expect(result.reason).toMatch(/change|diff|commit/i)
 	})
 })
 

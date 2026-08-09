@@ -22,13 +22,23 @@ import type { RoleIdentity } from "../types"
 // ---------------------------------------------------------------------------
 
 const RequestReviewSchema = Type.Object({
-	summary: Type.String(),
+	summary: Type.String({
+		description:
+			"A substantive handoff: changed files, behavior, acceptance-criteria evidence, validation commands/results, and any caveats.",
+	}),
+	noChangesExpected: Type.Optional(
+		Type.Boolean({
+			description:
+				"Set true only when the work item explicitly requires no repository changes; explain the evidence in summary.",
+		}),
+	),
 })
 
 export interface RequestReviewDetails {
 	kind: "request_review"
 	workItemId: number
 	summary: string
+	noChangesExpected?: boolean
 }
 
 export function createRequestReviewTool(
@@ -39,17 +49,20 @@ export function createRequestReviewTool(
 		label: "Request Review",
 		description:
 			"Signal that this work item is complete and ready for the Mission Lead " +
-			"to review. `summary` must be substantive: point at the files you " +
-			"changed, describe what the change does, and note any caveats or " +
-			"open questions. This is the lead's only view into what you did.",
+			"to review. The handoff must identify the deliverable, changed files, " +
+			"acceptance-criteria evidence, validation commands/results, commit hash, " +
+			"and any caveats. Set `noChangesExpected` only for an explicitly no-code " +
+			"work item; it does not waive the clean-worktree requirement.",
 		parameters: RequestReviewSchema,
 		promptGuidelines: [
-			"Call request_review only when the work item is genuinely complete and you have verified it.",
-			"The summary is the sole channel for what you did — make it substantive, not a one-liner.",
+			"Do not call request_review with uncommitted or untracked work.",
+			"Before requesting review, commit the intended changes, confirm git status --porcelain is empty, and compare the owner branch with current integration.",
+			"The summary is the sole channel for what you did — include acceptance evidence, validation results, commit hash, and caveats.",
+			"Set noChangesExpected=true only when the work item explicitly has no repository deliverable, and explain the independent evidence.",
 		],
 		execute: async (
 			_toolCallId: string,
-			params: { summary: string },
+			params: { summary: string; noChangesExpected?: boolean },
 		): Promise<AgentToolResult<RequestReviewDetails>> => {
 			if (who.workItemId === undefined) {
 				// Defensive: only an owner can call this. Tool surface prevents it.
@@ -66,6 +79,7 @@ export function createRequestReviewTool(
 					kind: "request_review",
 					workItemId: who.workItemId,
 					summary: params.summary,
+					...(params.noChangesExpected ? { noChangesExpected: true } : {}),
 				},
 				terminate: true,
 			}
@@ -124,12 +138,14 @@ export function createReviewWorkItemTool(
 		label: "Review Work Item",
 		description:
 			"Record your review verdict on a work item.\n" +
-			"- `accept`: the work meets criteria; it is merged into integration.\n" +
+			"- `accept`: the work meets every criterion and the committed branch is reviewable; it is merged into integration.\n" +
 			"- `rework`: needs changes; `feedback` is REQUIRED and resumes the owner's session.\n" +
 			"- `cancel`: abandon (wrong-scoped/obsolete); `feedback` optional.",
 		parameters: ReviewWorkItemSchema,
 		promptGuidelines: [
-			"Inspect the owner's branch against integration (git diff/log) before deciding — do not trust the claim blindly.",
+			"Inspect the owner's branch and worktree against current integration before deciding — do not trust the claim blindly.",
+			"Never accept dirty/untracked, stale, empty-diff, or integration-reverting work unless the item explicitly declares no-code and evidence supports it.",
+			"For rework, feedback must contain: problem and evidence, numbered required changes, exact validation commands/checks, and a definition of done.",
 			"On accept conflict, you will be told the conflicting files; issue a `rework` so the owner resolves against integration.",
 		],
 		execute: async (

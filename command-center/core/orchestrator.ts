@@ -970,6 +970,25 @@ export class Orchestrator {
 				return
 			}
 
+			const noChangesExpected = Boolean(
+				(
+					reviewRequest as {
+						result?: { details?: { noChangesExpected?: boolean } }
+					}
+				).result?.details?.noChangesExpected,
+			)
+			const readiness = await this.worktree.reviewReadiness(
+				this.repoFor(missionId),
+				missionId,
+				itemId,
+				noChangesExpected,
+			)
+			if (!readiness.ready) {
+				prompt = this.reviewHandoffFixPrompt(itemId, readiness.reason)
+				session = await this.acquireSession(owner)
+				continue
+			}
+
 			await this.transitionWorkItem(missionId, itemId, "ready_for_review", {
 				roleName: "work_item_owner",
 				workItemId: itemId,
@@ -1387,9 +1406,25 @@ export class Orchestrator {
 		const deps = formatDependencies(item.dependencies)
 		return (
 			`Work item #${itemId} ("${item.title}") has been assigned to you.\n\n` +
-			`Description: ${item.description}\n` +
+			`Description and contract:\n${item.description}\n` +
 			`Dependencies: ${deps}\n\n` +
-			`Implement this work item to completion, then call request_review with a substantive summary.`
+			"Implement the deliverable and verify every acceptance criterion. Before " +
+			"request_review, sync current integration if needed, commit the intended " +
+			"changes, confirm `git status --porcelain --untracked-files=all` is empty, " +
+			"check the branch diff against integration, run `git diff --check`, and " +
+			"include the commit hash plus evidence in the substantive summary."
+		)
+	}
+
+	private reviewHandoffFixPrompt(itemId: number, reason: string): string {
+		return (
+			`Review handoff for work item #${itemId} is not ready.\n\n` +
+			`Control-plane check:\n${reason}\n\n` +
+			"Fix the handoff before asking the Mission Lead again: sync current " +
+			"integration if needed, preserve accepted work, commit all intended " +
+			"changes, run `git status --porcelain --untracked-files=all` until clean, " +
+			"verify the branch diff and `git diff --check`, then call request_review " +
+			"with the commit hash and validation evidence."
 		)
 	}
 
@@ -1399,9 +1434,14 @@ export class Orchestrator {
 		reviewRequest: Event,
 	): Promise<string> {
 		const item = await this.getItem(missionId, itemId)
-		const summary =
-			(reviewRequest as { result?: { details?: { summary?: string } } }).result
-				?.details?.summary ?? "(no summary)"
+		const reviewDetails = (
+			reviewRequest as {
+				result?: {
+					details?: { summary?: string; noChangesExpected?: boolean }
+				}
+			}
+		).result?.details
+		const summary = reviewDetails?.summary ?? "(no summary)"
 		const ownerBranch = `cc/${missionId}/work/${itemId}`
 		return commandCenterLeadMessage({
 			missionId,
@@ -1414,7 +1454,7 @@ export class Orchestrator {
 				"Owner's summary:",
 				summary,
 			].join("\n"),
-			directive: `Inspect the change (git diff/log the owner's branch against integration), then call review_work_item({ workItemId: ${itemId}, decision, feedback? }) with your verdict. Do not provide the verdict only in prose.`,
+			directive: `Inspect the owner's worktree and committed branch against current integration. Check status, ancestry, diff, and every acceptance criterion. If anything is missing, call review_work_item({ workItemId: ${itemId}, decision: "rework", feedback }) with problem/evidence, numbered required changes, exact validation, and definition of done. Accept only a clean, reviewable branch; do not provide the verdict only in prose.`,
 		})
 	}
 
@@ -1422,9 +1462,12 @@ export class Orchestrator {
 		return (
 			`Work item #${itemId} was sent back for rework.\n\n` +
 			`Feedback from the Mission Lead:\n${feedback}\n\n` +
-			`Address the feedback. If integration has advanced, sync it first ` +
-			`(merge/rebase cc/<missionId>/integration into your branch). ` +
-			`Then call request_review again.`
+			"Address every numbered requirement. If integration has advanced, sync " +
+			"it first (merge/rebase cc/<missionId>/integration into your branch) and " +
+			"preserve accepted work. Re-run the specified validation, commit the " +
+			"complete fix, confirm `git status --porcelain --untracked-files=all` is " +
+			"empty, verify the branch diff and `git diff --check`, then call " +
+			"request_review again with commit hash and evidence."
 		)
 	}
 

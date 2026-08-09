@@ -210,6 +210,20 @@ describe("request_review tool", () => {
 		})
 	})
 
+	test("marks an explicitly no-code review request", async () => {
+		const tool = createRequestReviewTool(owner1)
+		const res = await run(tool, {
+			summary:
+				"Verified the requested audit; no repository changes are required.",
+			noChangesExpected: true,
+		})
+		expect(res.details).toMatchObject({
+			kind: "request_review",
+			workItemId: 1,
+			noChangesExpected: true,
+		})
+	})
+
 	test("throws if called by a non-owner role (defensive)", async () => {
 		const tool = createRequestReviewTool(lead)
 		await expect(run(tool, { summary: "x" })).rejects.toThrow(/non-owner/)

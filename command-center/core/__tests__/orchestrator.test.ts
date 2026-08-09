@@ -125,6 +125,7 @@ function makeOrch(agents: FakeAgents = {}): {
 						if (
 							text.includes("has been assigned") ||
 							text.includes("sent back for rework") ||
+							text.includes("Review handoff for work item") ||
 							text.includes("Mission Lead has responded")
 						) {
 							const itemId = session.who.workItemId!
@@ -1213,6 +1214,37 @@ describe("Orchestrator — lead prompt framing", () => {
 		expect(helpPrompt).toContain("Owner's reason:")
 		expect(helpPrompt).toContain("I cannot tell which API is stable.")
 		expect(helpPrompt).toContain("respond_to_help({ workItemId: 1")
+	})
+})
+
+describe("Orchestrator — review handoff gate", () => {
+	test("reprompts the owner when the branch is not review-ready", async () => {
+		const { orch, wt, store, runner } = makeOrch({
+			leadPlan: {
+				items: [{ title: "Item A", description: "Do A", dependencies: [] }],
+			},
+		})
+		wt.reviewReadinessResults = [
+			{
+				ready: false,
+				reason:
+					"The owner worktree is dirty; commit and clean it before review.",
+			},
+			{ ready: true },
+		]
+
+		const missionId = await orch.defineMission("Test mission", {
+			repoPath: "/test-repo",
+		})
+
+		const plan = await store.readPlan(missionId)
+		expect(plan?.items[0]?.status).toBe("accepted")
+		expect(
+			wt.calls.filter((call) => call.startsWith("reviewReadiness:")).length,
+		).toBe(2)
+		expect(wt.calls).toContain(`acceptMerge:${missionId}:1`)
+		const owner = runner.sessions.get(`${missionId}:work_item_owner:1`)
+		expect(owner?.prompts.some((p) => p.includes("not ready"))).toBe(true)
 	})
 })
 

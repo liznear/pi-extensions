@@ -142,8 +142,16 @@ export function createWritePlanTool(
 			"Add new work items to the plan and/or edit existing ones. Items are " +
 			"append-only (never deleted). Omit `id` to append a new item; provide " +
 			"an existing `id` to edit its title/description/dependencies. " +
-			"Dependencies of accepted/cancelled items cannot be changed.",
+			"Dependencies of accepted/cancelled items cannot be changed. Each " +
+			"description must specify the deliverable/scope, inputs and dependencies, " +
+			"observable acceptance criteria, validation evidence, and clean committed " +
+			"handoff requirements; explicitly mark no-code items.",
 		parameters: WritePlanInputSchema,
+		promptGuidelines: [
+			"Write descriptions as executable contracts: deliverable, files/scope, inputs/dependencies, measurable criteria, validation commands/evidence, and definition of done.",
+			"Use dependencies to serialize work whose outputs form a contract; do not create parallel items that can silently disagree.",
+			"Avoid vague criteria such as 'improve' or 'handle' without an observable result.",
+		],
 		execute: async (
 			_toolCallId: string,
 			params: WritePlanInput,

@@ -76,6 +76,9 @@ export type MergeResult =
 	| { ok: true }
 	| { ok: false; conflictingFiles: string[] }
 
+/** Readiness of an owner branch before it can enter Mission Lead review. */
+export type ReviewReadiness = { ready: true } | { ready: false; reason: string }
+
 /**
  * The worktree operations the Orchestrator depends on (ticket 06).
  *
@@ -103,6 +106,12 @@ export interface WorktreeProvider {
 		missionId: string,
 		itemId: number,
 	): Promise<void>
+	reviewReadiness(
+		repoPath: string,
+		missionId: string,
+		itemId: number,
+		noChangesExpected: boolean,
+	): Promise<ReviewReadiness>
 	acceptMerge(
 		repoPath: string,
 		missionId: string,
@@ -306,6 +315,78 @@ export class WorktreeProvisioner implements WorktreeProvider {
 		}
 	}
 
+	/**
+	 * Validate the branch/worktree handoff before notifying the Mission Lead.
+	 * This is intentionally separate from acceptMerge: accepting a review must
+	 * never be the first point at which we discover that the owner only changed
+	 * an uncommitted worktree or started from stale integration.
+	 */
+	async reviewReadiness(
+		repoPath: string,
+		missionId: string,
+		itemId: number,
+		noChangesExpected: boolean,
+	): Promise<ReviewReadiness> {
+		const branch = ownerBranch(missionId, itemId)
+		const integration = integrationBranch(missionId)
+		const ownerDir = ownerWorktreeDir(repoPath, missionId, itemId)
+
+		if (!(await this.branchExists(repoPath, branch))) {
+			return {
+				ready: false,
+				reason: `Owner branch ${branch} does not exist. Recreate the worktree before requesting review.`,
+			}
+		}
+
+		const status = await this.git(
+			["status", "--porcelain", "--untracked-files=all"],
+			ownerDir,
+		)
+		if (status.code !== 0) {
+			return {
+				ready: false,
+				reason: `Could not inspect the owner worktree: ${status.stderr.trim() || "git status failed"}.`,
+			}
+		}
+		if (status.stdout.trim().length > 0) {
+			return {
+				ready: false,
+				reason:
+					"The owner worktree is dirty or contains untracked files. Commit all intended changes and leave `git status --porcelain` empty before requesting review.",
+			}
+		}
+
+		const basedOnIntegration = await this.git(
+			["merge-base", "--is-ancestor", integration, branch],
+			repoPath,
+		)
+		if (basedOnIntegration.code !== 0) {
+			return {
+				ready: false,
+				reason: `The owner branch is stale relative to ${integration}. Sync/rebase ${integration} into ${branch}, preserve accepted work, resolve conflicts, and verify again.`,
+			}
+		}
+
+		const diff = await this.git(
+			["diff", "--quiet", `${integration}..${branch}`],
+			repoPath,
+		)
+		if (diff.code > 1) {
+			return {
+				ready: false,
+				reason: `Could not inspect the committed owner diff: ${diff.stderr.trim() || "git diff failed"}.`,
+			}
+		}
+		if (diff.code === 0 && !noChangesExpected) {
+			return {
+				ready: false,
+				reason: `The owner branch has no committed diff against ${integration}. Commit the intended changes before requesting review, or explicitly mark this item as no-code in request_review.`,
+			}
+		}
+
+		return { ready: true }
+	}
+
 	/** The owner worktree dir (computed; the owner's cwd). */
 	ownerDir(repoPath: string, missionId: string, itemId: number): string {
 		return ownerWorktreeDir(repoPath, missionId, itemId)
@@ -364,6 +445,10 @@ export class FakeWorktreeProvider implements WorktreeProvider {
 	private ownerDirs = new Set<string>()
 	/** Set of `${missionId}:${itemId}` that should conflict on acceptMerge. */
 	conflictOn = new Set<string>()
+	/** Readiness returned by the fake before lead review. */
+	reviewReadinessResult: ReviewReadiness = { ready: true }
+	/** Optional sequence for testing an automatic handoff retry. */
+	reviewReadinessResults: ReviewReadiness[] = []
 	/** Recorded calls, for assertions. */
 	calls: string[] = []
 
@@ -414,6 +499,16 @@ export class FakeWorktreeProvider implements WorktreeProvider {
 	): Promise<void> {
 		this.calls.push(`removeOwner:${missionId}:${itemId}`)
 		this.ownerDirs.delete(ownerWorktreeDir("/fake-repo", missionId, itemId))
+	}
+
+	async reviewReadiness(
+		_repoPath: string,
+		missionId: string,
+		itemId: number,
+		_noChangesExpected: boolean,
+	): Promise<ReviewReadiness> {
+		this.calls.push(`reviewReadiness:${missionId}:${itemId}`)
+		return this.reviewReadinessResults.shift() ?? this.reviewReadinessResult
 	}
 
 	async acceptMerge(
