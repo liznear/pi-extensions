@@ -17,6 +17,18 @@ import {
 /** Stub fg rendering color markers for readable assertions. */
 const fg = (color: ThemeColor, text: string) => `<${color}>${text}</${color}>`
 
+/** Mirror the implementation's fixed column widths / padding so padded
+ * cells can be asserted without fragile space literals. Mirrors padCell
+ * exactly (ANSI-aware for real-theme runs; a no-op for the tag-stub `fg`). */
+const STATUS_CELL_WIDTH = 20
+const SESSION_CELL_WIDTH = 12
+const padTo = (s: string, w: number) =>
+	s + " ".repeat(Math.max(0, w - visibleWidth(s)))
+/** Pad a status cell (column 2) to its fixed visible width. */
+const status = (s: string) => padTo(s, STATUS_CELL_WIDTH)
+/** Pad a session cell (column 3) to its fixed visible width. */
+const session = (s: string) => padTo(s, SESSION_CELL_WIDTH)
+
 const EMPTY_COUNTS: WorkItemCounts = {
 	pending: 0,
 	in_progress: 0,
@@ -241,14 +253,16 @@ describe("buildMissionsMarkdown", () => {
 			[
 				"| ID | STATUS | SESSION | TITLE |",
 				"| --- | --- | --- | --- |",
-				"| ┗━ abc12345 | In progress | attached | Fix flaky tests |",
+				`| ┗━ abc12345 | ${status("In progress")} | ${session("attached")} | Fix flaky tests |`,
 			].join("\n"),
 		)
 	})
 
 	test("shows detached when no session is attached", () => {
 		const md = buildMissionsMarkdown([wrow({ id: "m1" })])
-		expect(md).toContain("| ┗━ m1 | In progress | detached | Mission |")
+		expect(md).toContain(
+			`| ┗━ m1 | ${status("In progress")} | ${session("detached")} | Mission |`,
+		)
 	})
 
 	test("colors status and session cells via fg", () => {
@@ -293,7 +307,7 @@ describe("buildMissionsMarkdown", () => {
 			wrow({ id: "m1", mission: { title: "pipe | and \\ backslash" } }),
 		])
 		expect(md).toContain(
-			"| ┗━ m1 | In progress | detached | pipe \\| and \\\\ backslash |",
+			`| ┗━ m1 | ${status("In progress")} | ${session("detached")} | pipe \\| and \\\\ backslash |`,
 		)
 	})
 
@@ -304,9 +318,7 @@ describe("buildMissionsMarkdown", () => {
 		const md = buildMissionsMarkdown(rows)
 		const dataLines = md
 			.split("\n")
-			.filter(
-				(l) => l.includes(" | attached | ") || l.includes(" | detached | "),
-			)
+			.filter((l) => l.startsWith("| ┣━ ") || l.startsWith("| ┗━ "))
 		expect(dataLines).toHaveLength(MAX_WIDGET_LINES)
 		expect(md).toContain(`|  |  |  | … +2 more |`)
 	})
@@ -316,9 +328,7 @@ describe("buildMissionsMarkdown", () => {
 		const md = buildMissionsMarkdown(rows, undefined, 2)
 		const dataLines = md
 			.split("\n")
-			.filter(
-				(l) => l.includes(" | attached | ") || l.includes(" | detached | "),
-			)
+			.filter((l) => l.startsWith("| ┣━ ") || l.startsWith("| ┗━ "))
 		expect(dataLines).toHaveLength(2)
 		expect(md).toContain("… +3 more")
 	})
@@ -340,11 +350,11 @@ describe("buildMissionsMarkdown", () => {
 			[
 				"| ID | STATUS | SESSION | TITLE |",
 				"| --- | --- | --- | --- |",
-				"| ┣━ abc12345 | In progress | detached | Fix flaky tests |",
-				"| ┃  ┣━ #1 | Accepted | — | Repro |",
-				"| ┃  ┣━ #2 | In progress | — | Fix |",
-				"| ┃  ┣━ #3 | Ready for review | — | Flake guard |",
-				"| ┃  ┗━ #4 | Cancelled | — | Cleanup |",
+				`| ┣━ abc12345 | ${status("In progress")} | ${session("detached")} | Fix flaky tests |`,
+				`| ┃  ┣━ #1 | ${status("Accepted")} | ${session("—")} | Repro |`,
+				`| ┃  ┣━ #2 | ${status("In progress")} | ${session("—")} | Fix |`,
+				`| ┃  ┣━ #3 | ${status("Ready for review")} | ${session("—")} | Flake guard |`,
+				`| ┃  ┗━ #4 | ${status("Cancelled")} | ${session("—")} | Cleanup |`,
 			].join("\n"),
 		)
 	})
@@ -381,10 +391,18 @@ describe("buildMissionsMarkdown", () => {
 				],
 			}),
 		])
-		expect(md).toContain("| ┃  ┣━ #1 | In progress | 🔧 git diff | Fix |")
-		expect(md).toContain("| ┃  ┣━ #2 | In progress | 💭 thinking… | Think |")
-		expect(md).toContain("| ┃  ┣━ #3 | Pending | ✍️ writing… | Docs |")
-		expect(md).toContain("| ┃  ┗━ #4 | In progress | — | Idle |")
+		expect(md).toContain(
+			`| ┃  ┣━ #1 | ${status("In progress")} | ${session("🔧 git diff")} | Fix |`,
+		)
+		expect(md).toContain(
+			`| ┃  ┣━ #2 | ${status("In progress")} | ${session("💭 thinking…")} | Think |`,
+		)
+		expect(md).toContain(
+			`| ┃  ┣━ #3 | ${status("Pending")} | ${session("✍️ writing…")} | Docs |`,
+		)
+		expect(md).toContain(
+			`| ┃  ┗━ #4 | ${status("In progress")} | ${session("—")} | Idle |`,
+		)
 	})
 
 	test("caps a long tool name in the activity cell", () => {
@@ -402,8 +420,10 @@ describe("buildMissionsMarkdown", () => {
 				],
 			}),
 		])
+		// Tool name truncated to SESSION_CELL_WIDTH minus the "🔧 " prefix (3)
+		// with an ellipsis.
 		expect(md).toContain(
-			`| ┃  ┗━ #1 | In progress | 🔧 ${longTool.slice(0, 24)}… | Fix |`,
+			`| ┃  ┗━ #1 | ${status("In progress")} | ${session(`🔧 ${longTool.slice(0, SESSION_CELL_WIDTH - 3 - 1)}…`)} | Fix |`,
 		)
 	})
 
@@ -427,8 +447,12 @@ describe("buildMissionsMarkdown", () => {
 		// the surviving item closes the tree.
 		const itemLines = lines.filter((l) => l.includes("#"))
 		expect(itemLines).toHaveLength(1)
-		expect(lines).toContain("| ┣━ m1 | In progress | detached | Mission |")
-		expect(lines).toContain("| ┃  ┗━ #1 | Pending | — | a |")
+		expect(lines).toContain(
+			`| ┣━ m1 | ${status("In progress")} | ${session("detached")} | Mission |`,
+		)
+		expect(lines).toContain(
+			`| ┃  ┗━ #1 | ${status("Pending")} | ${session("—")} | a |`,
+		)
 		expect(lines.join("\n")).not.toContain("#2")
 		expect(lines).toContain("|  |  |  | … +2 more |")
 	})
@@ -444,7 +468,7 @@ describe("buildMissionsMarkdown", () => {
 			wrow({ id: "m1", mission: { title: long } }),
 		])
 		expect(md).toContain(
-			`| ┗━ m1 | In progress | detached | ${long.slice(0, MAX_TITLE_CHARS)}… |`,
+			`| ┗━ m1 | ${status("In progress")} | ${session("detached")} | ${long.slice(0, MAX_TITLE_CHARS)}… |`,
 		)
 	})
 })

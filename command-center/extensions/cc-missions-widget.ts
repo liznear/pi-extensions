@@ -1,6 +1,6 @@
 import path from "node:path"
 import type { ThemeColor } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth } from "@earendil-works/pi-tui"
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import type {
 	MissionStatus,
 	MissionSummary,
@@ -111,8 +111,46 @@ const WORK_ITEM_STATUS_COLOR: Record<WorkItemStatus, ThemeColor> = {
 	cancelled: "dim",
 }
 
-/** Cap a tool name in the activity cell so a long path can't balloon the row. */
-const MAX_TOOL_CHARS = 24
+/**
+ * Fixed visible width of the STATUS column: every status cell is padded to
+ * this width so a longer label (e.g. "Ready for acceptance") can't widen
+ * the column and shift the columns to its right.
+ */
+const STATUS_CELL_WIDTH = 20
+
+/**
+ * Fixed visible width of the SESSION column: every session cell is padded
+ * to this width so the activity state ("💭 thinking…" needs the most) can't
+ * widen the column. Tool names are truncated to fit.
+ */
+const SESSION_CELL_WIDTH = 12
+
+/** Visible width of the "🔧 " tool-activity prefix. */
+const TOOL_PREFIX_WIDTH = 3
+
+/**
+ * Fit a tool name into the SESSION cell (minus its "🔧 " prefix), truncating
+ * with an ellipsis when it would otherwise overflow. Width is measured with
+ * `visibleWidth` so wide/emoji tool names can't overrun the fixed column.
+ */
+function fitToolName(tool: string): string {
+	const budget = SESSION_CELL_WIDTH - TOOL_PREFIX_WIDTH
+	if (visibleWidth(tool) <= budget) return tool
+	const ellipsis = "…"
+	const target = budget - visibleWidth(ellipsis)
+	let result = ""
+	for (const { segment } of new Intl.Segmenter().segment(tool)) {
+		if (visibleWidth(result + segment) > target) break
+		result += segment
+	}
+	return result + ellipsis
+}
+
+/** Pad `text` with trailing spaces to a fixed visible width (ANSI-aware). */
+function padCell(text: string, width: number): string {
+	const padding = Math.max(0, width - visibleWidth(text))
+	return text + " ".repeat(padding)
+}
 
 /** Render a work item's live activity cell (dim "—" when idle/absent). */
 function activityCell(
@@ -122,10 +160,8 @@ function activityCell(
 	if (!activity || activity.phase === "idle") return fg("dim", "—")
 	if (activity.phase === "thinking") return fg("accent", "💭 thinking…")
 	if (activity.phase === "writing") return fg("accent", "✍️ writing…")
-	const tool = (activity.tool ?? "tool").trim()
-	const shown =
-		tool.length <= MAX_TOOL_CHARS ? tool : `${tool.slice(0, MAX_TOOL_CHARS)}…`
-	return fg("accent", `🔧 ${shown}`)
+	const tool = fitToolName((activity.tool ?? "tool").trim())
+	return fg("accent", `🔧 ${tool}`)
 }
 
 /**
@@ -225,10 +261,16 @@ function missionLine(
 	fg: (color: ThemeColor, text: string) => string,
 ): string {
 	const title = escapeCell(fitTitle(mission.title))
-	const status = fg(STATUS_COLOR[mission.status], STATUS_LABEL[mission.status])
-	const session = fg(
-		sessionAttached ? "accent" : "dim",
-		sessionAttached ? "attached" : "detached",
+	const status = padCell(
+		fg(STATUS_COLOR[mission.status], STATUS_LABEL[mission.status]),
+		STATUS_CELL_WIDTH,
+	)
+	const session = padCell(
+		fg(
+			sessionAttached ? "accent" : "dim",
+			sessionAttached ? "attached" : "detached",
+		),
+		SESSION_CELL_WIDTH,
 	)
 	return `| ${mission.id} | ${status} | ${session} | ${title} |`
 }
@@ -238,11 +280,14 @@ function workItemLine(
 	fg: (color: ThemeColor, text: string) => string,
 ): string {
 	const title = escapeCell(fitTitle(item.title))
-	const status = fg(
-		WORK_ITEM_STATUS_COLOR[item.status],
-		WORK_ITEM_STATUS_LABEL[item.status],
+	const status = padCell(
+		fg(
+			WORK_ITEM_STATUS_COLOR[item.status],
+			WORK_ITEM_STATUS_LABEL[item.status],
+		),
+		STATUS_CELL_WIDTH,
 	)
-	const session = activityCell(item.activity, fg)
+	const session = padCell(activityCell(item.activity, fg), SESSION_CELL_WIDTH)
 	return `| #${item.id} | ${status} | ${session} | ${title} |`
 }
 
