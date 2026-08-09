@@ -24,7 +24,7 @@ interface Subcommand {
 	usage: string
 }
 
-/** The ten `/cc` subcommands, in the order they appear in cc.ts's handler. */
+/** The nine `/cc` subcommands, in display order for autocomplete. */
 const SUBCOMMANDS: readonly Subcommand[] = [
 	{ name: "list", usage: "List missions" },
 	{
@@ -52,11 +52,6 @@ const SUBCOMMANDS: readonly Subcommand[] = [
 		name: "attach",
 		usage: "Attach to a mission session: /cc attach <missionId> [workItemId]",
 	},
-	{
-		name: "reply",
-		usage:
-			"Reply to a human input: /cc reply <missionId> <requestId> <message>",
-	},
 	{ name: "accept", usage: "Accept a mission: /cc accept <missionId>" },
 	{
 		name: "reject",
@@ -69,7 +64,6 @@ const MISSION_ID_SUBCOMMANDS: ReadonlySet<string> = new Set([
 	"abort",
 	"delete",
 	"attach",
-	"reply",
 	"accept",
 	"reject",
 ])

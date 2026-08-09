@@ -392,12 +392,7 @@ export default function (pi: ExtensionAPI) {
 			})
 
 			orch.subscribeAll((e) => {
-				if (e.type === "human-input-requested") {
-					ctx.ui.notify(
-						`Action needed for Mission ${e.missionId}: ${e.question}`,
-						"info",
-					)
-				} else if (
+				if (
 					e.type === "mission-status-changed" ||
 					e.type === "work-item-status-changed" ||
 					e.type === "mission-defined" ||
@@ -459,8 +454,8 @@ export default function (pi: ExtensionAPI) {
 			})
 
 			// NO auto-resume: missions are driven only by explicit /cc commands
-			// (new / launch / resume / reply / accept / reject / abort / delete),
-			// each of which acquires the mission's driver lock.
+			// (new / launch / resume / accept / reject / abort / delete), each of
+			// which acquires the mission's driver lock.
 		}
 
 		// The widget targets the CURRENT session: refresh the context on every
@@ -652,19 +647,6 @@ export default function (pi: ExtensionAPI) {
 						: `Resumed mission ${missionId}`,
 					"info",
 				)
-			} else if (cmd === "reply") {
-				const missionId = argsList[1]
-				const requestId = argsList[2]
-				const message = argsList.slice(3).join(" ")
-				if (!missionId || !requestId || !message) {
-					await ctx.ui.notify(
-						"Usage: /cc reply <missionId> <requestId> <message>",
-						"error",
-					)
-					return
-				}
-				await orch.replyHumanInput(missionId, requestId, message)
-				await ctx.ui.notify(`Replied to human input ${requestId}`, "info")
 			} else if (cmd === "accept") {
 				const missionId = argsList[1]
 				if (!missionId) {

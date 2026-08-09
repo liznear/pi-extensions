@@ -53,7 +53,6 @@ describe("ccCompletionForCursor — subcommand position", () => {
 			"abort",
 			"delete",
 			"attach",
-			"reply",
 			"accept",
 			"reject",
 		])
@@ -100,14 +99,7 @@ describe("ccCompletionForCursor — mission id position", () => {
 	})
 
 	test("every mission-id subcommand completes mission ids", () => {
-		for (const sub of [
-			"abort",
-			"delete",
-			"attach",
-			"reply",
-			"accept",
-			"reject",
-		]) {
+		for (const sub of ["abort", "delete", "attach", "accept", "reject"]) {
 			const c = ccCompletionForCursor(`/cc ${sub} `, MISSIONS)
 			expect(c?.items.map((i) => i.value)).toEqual(MISSIONS.map((m) => m.id))
 		}

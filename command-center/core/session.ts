@@ -325,7 +325,6 @@ const DOMAIN_TOOL_NAMES = new Set([
 	"update_memory",
 	"review_work_item",
 	"respond_to_help",
-	"request_human_input",
 	"report_status",
 ])
 

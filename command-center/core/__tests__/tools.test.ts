@@ -5,6 +5,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { type Event, EventBus } from "../events"
 import { InMemoryStore } from "../store"
+import { createRequestHumanInputTool } from "../tools/human_input"
 import { createUpdateMemoryTool } from "../tools/memory"
 import { createDefineMissionTool } from "../tools/mission"
 import { createWritePlanTool } from "../tools/plan"
@@ -160,6 +161,40 @@ describe("update_memory tool", () => {
 		await run(leadTool, { content: "L" })
 		expect(await store.readMemory(owner1)).toBe("O")
 		expect(await store.readMemory(lead)).toBe("L")
+	})
+})
+
+describe("request_human_input tool", () => {
+	test("persists an async request and emits human-input-requested for library consumers", async () => {
+		const store = new InMemoryStore()
+		const bus = new EventBus()
+		const events = capture(bus)
+		const tool = createRequestHumanInputTool(store, bus, lead)
+
+		const res = await run(tool, {
+			question: "Which deployment target?",
+			options: ["staging", "prod"],
+			workItemId: 2,
+		})
+
+		const requests = await store.readHumanInputRequests("7k3a9fqa")
+		expect(requests).toHaveLength(1)
+		expect(requests[0]).toMatchObject({
+			missionId: "7k3a9fqa",
+			workItemId: 2,
+			question: "Which deployment target?",
+			options: ["staging", "prod"],
+			status: "open",
+		})
+		expect(res.details).toEqual({ requestId: requests[0]?.requestId })
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "human-input-requested",
+				missionId: "7k3a9fqa",
+				roleName: "mission_lead",
+				question: "Which deployment target?",
+			}),
+		)
 	})
 })
 
