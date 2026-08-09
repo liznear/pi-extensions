@@ -1,3 +1,4 @@
+import path from "node:path"
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -11,9 +12,9 @@ import {
 import { Markdown } from "@earendil-works/pi-tui"
 import { FileDriverLock } from "../core/driver-lock"
 import { Orchestrator } from "../core/orchestrator"
-import { PiSessionRunner } from "../core/session"
+import { PiVisibleLeadSessionRunner } from "../core/session"
 import { FileStore } from "../core/store-file"
-import type { RoleName } from "../core/types"
+import type { MissionSummary, RoleIdentity, RoleName } from "../core/types"
 import { WorktreeProvisioner } from "../core/worktree/provisioner"
 import { ccCompletionForCursor } from "./cc-completions"
 import {
@@ -187,6 +188,55 @@ async function requireAttachedMission(
 	return missionId
 }
 
+function normalizedPath(p: string): string {
+	return path.resolve(p)
+}
+
+/**
+ * Resolve a visible session cwd to the exact Command Center role attached to
+ * it. Only `integration` is considered the Mission Lead; source-repo sessions
+ * and unknown worktree children are deliberately unattached.
+ */
+function visibleRoleForMission(
+	mission: Pick<MissionSummary, "id" | "repoPath">,
+	cwd: string,
+): RoleIdentity | undefined {
+	const cwdNorm = normalizedPath(cwd)
+	const prefix = normalizedPath(
+		path.join(mission.repoPath, ".command-center", "worktrees", mission.id),
+	)
+	if (cwdNorm !== prefix && !cwdNorm.startsWith(prefix + path.sep)) return
+	const relative = path.relative(prefix, cwdNorm)
+	const [child] = relative.split(path.sep)
+	if (child === "integration") {
+		return { missionId: mission.id, roleName: "mission_lead" }
+	}
+	if (child?.startsWith("work-")) {
+		const rawWorkItemId = child.slice("work-".length)
+		const workItemId = Number.parseInt(rawWorkItemId, 10)
+		if (/^\d+$/.test(rawWorkItemId) && Number.isInteger(workItemId)) {
+			return {
+				missionId: mission.id,
+				roleName: "work_item_owner",
+				workItemId,
+			}
+		}
+	}
+	return undefined
+}
+
+async function currentVisibleRole(
+	ctx: ExtensionContext,
+): Promise<RoleIdentity | undefined> {
+	if (!orch) return undefined
+	const missions = await orch.store.listMissions()
+	for (const mission of missions) {
+		const role = visibleRoleForMission(mission, ctx.cwd)
+		if (role) return role
+	}
+	return undefined
+}
+
 /**
  * Re-render the missions pinned above the input editor for the current
  * session. Missions whose repo source path equals the session's cwd are
@@ -261,7 +311,14 @@ export default function (pi: ExtensionAPI) {
 		if (!orch) {
 			const store = new FileStore()
 			orch = new Orchestrator({
-				sessionRunner: (bus, store) => new PiSessionRunner({ bus, store }),
+				sessionRunner: (bus, store) =>
+					new PiVisibleLeadSessionRunner({
+						bus,
+						store,
+						pi,
+						getContext: () => widgetCtx,
+						resolveVisibleRole: currentVisibleRole,
+					}),
 				worktreeProvider: new WorktreeProvisioner(),
 				store,
 				// Cross-process coordination: exactly one process may drive a

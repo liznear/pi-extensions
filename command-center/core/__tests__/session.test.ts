@@ -1,8 +1,19 @@
 import { describe, expect, test } from "bun:test"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
-import type { EmittableEvent } from "../events"
-import { normalizePiEvent } from "../session"
+import type {
+	AgentSessionEvent,
+	ExtensionAPI,
+	ExtensionContext,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
+import { type EmittableEvent, EventBus } from "../events"
+import {
+	FakeSessionRunner,
+	normalizePiEvent,
+	PiVisibleLeadSessionRunner,
+} from "../session"
+import { InMemoryStore } from "../store"
 import type { RoleIdentity } from "../types"
 
 const lead: RoleIdentity = { missionId: "7k3a9fqa", roleName: "mission_lead" }
@@ -207,5 +218,278 @@ describe("normalizePiEvent — message & session boundaries", () => {
 				ev({ type: "queue_update", steering: [], followUp: [] }),
 			),
 		).toBeNull()
+	})
+})
+
+class FakeVisiblePi {
+	readonly handlers = new Map<
+		string,
+		Array<(event: unknown, ctx: ExtensionContext) => unknown>
+	>()
+	readonly registeredTools: ToolDefinition[] = []
+	readonly sent: Array<{
+		text: string
+		options?: { deliverAs?: "steer" | "followUp" }
+	}> = []
+	activeTools: string[] = []
+
+	on(
+		event: string,
+		handler: (event: unknown, ctx: ExtensionContext) => unknown,
+	): void {
+		const list = this.handlers.get(event) ?? []
+		list.push(handler)
+		this.handlers.set(event, list)
+	}
+
+	registerTool(tool: ToolDefinition): void {
+		this.registeredTools.push(tool)
+		if (!this.activeTools.includes(tool.name)) this.activeTools.push(tool.name)
+	}
+
+	getActiveTools(): string[] {
+		return [...this.activeTools]
+	}
+
+	setActiveTools(toolNames: string[]): void {
+		this.activeTools = [...toolNames]
+	}
+
+	sendUserMessage(
+		text: string,
+		options?: { deliverAs?: "steer" | "followUp" },
+	): void {
+		this.sent.push({ text, options })
+	}
+
+	async emit(
+		eventName: string,
+		event: unknown,
+		ctx: ExtensionContext,
+	): Promise<void> {
+		for (const handler of this.handlers.get(eventName) ?? []) {
+			await handler(event, ctx)
+		}
+	}
+}
+
+function visibleCtx(
+	sessionId = "visible-session",
+	idle = true,
+): ExtensionContext {
+	return {
+		cwd: "/repo/.command-center/worktrees/7k3a9fqa/integration",
+		isIdle: () => idle,
+		abort: () => undefined,
+		sessionManager: { getSessionId: () => sessionId },
+	} as ExtensionContext
+}
+
+type VisiblePiApi = Pick<
+	ExtensionAPI,
+	| "on"
+	| "sendUserMessage"
+	| "registerTool"
+	| "getActiveTools"
+	| "setActiveTools"
+>
+
+function tool(name: string): ToolDefinition {
+	return {
+		name,
+		label: name,
+		description: `${name} description`,
+		parameters: Type.Object({}),
+		async execute() {
+			return {
+				content: [{ type: "text", text: `${name} ok` }],
+				details: undefined,
+			}
+		},
+	} as ToolDefinition
+}
+
+describe("PiVisibleLeadSessionRunner", () => {
+	test("uses the current attached lead session for prompts, prompt injection, tools, and events", async () => {
+		const bus = new EventBus()
+		const store = new InMemoryStore()
+		await store.updateMemory(lead, "remember this")
+		const pi = new FakeVisiblePi()
+		const ctx = visibleCtx()
+		const events: EmittableEvent[] = []
+		bus.subscribe((e) => events.push(e))
+		const runner = new PiVisibleLeadSessionRunner({
+			bus,
+			store,
+			pi: pi as unknown as VisiblePiApi,
+			getContext: () => ctx,
+			resolveVisibleRole: () => lead,
+			hiddenRunner: new FakeSessionRunner(bus),
+		})
+
+		const session = await runner.startOrResume(lead, ctx.cwd, "lead prompt", [
+			tool("define_mission"),
+			tool("read"),
+		])
+		expect(session.sessionId).toBe("visible-session")
+		expect(pi.registeredTools.map((t) => t.name)).toEqual(["define_mission"])
+		expect(pi.activeTools).toContain("define_mission")
+
+		const beforeResults = await Promise.all(
+			(pi.handlers.get("before_agent_start") ?? []).map((handler) =>
+				handler({ type: "before_agent_start" }, ctx),
+			),
+		)
+		expect(beforeResults[0]).toMatchObject({
+			systemPrompt: "lead prompt\n\n## Your Memory\n\nremember this",
+		})
+
+		const promptDone = session.prompt("review item")
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(pi.sent).toEqual([{ text: "review item", options: undefined }])
+		await pi.emit(
+			"message_update",
+			{
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", delta: "ok" },
+			},
+			ctx,
+		)
+		await pi.emit("agent_settled", { type: "agent_settled" }, ctx)
+		await promptDone
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "session-started",
+				missionId: "7k3a9fqa",
+				roleName: "mission_lead",
+				sessionId: "visible-session",
+			}),
+		)
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "message-delta",
+				missionId: "7k3a9fqa",
+				roleName: "mission_lead",
+				delta: "ok",
+			}),
+		)
+	})
+
+	test("is inert and falls back to the hidden runner when the current session is not the mission lead", async () => {
+		const bus = new EventBus()
+		const store = new InMemoryStore()
+		const pi = new FakeVisiblePi()
+		const hidden = new FakeSessionRunner(bus)
+		const ctx = visibleCtx()
+		const runner = new PiVisibleLeadSessionRunner({
+			bus,
+			store,
+			pi: pi as unknown as VisiblePiApi,
+			getContext: () => ctx,
+			resolveVisibleRole: () => undefined,
+			hiddenRunner: hidden,
+		})
+
+		const session = await runner.startOrResume(lead, ctx.cwd, "lead prompt", [
+			tool("define_mission"),
+		])
+		expect(session.sessionId).toBe("fake-0")
+		expect(pi.registeredTools).toEqual([])
+		expect(pi.sent).toEqual([])
+
+		const beforeResults = await Promise.all(
+			(pi.handlers.get("before_agent_start") ?? []).map((handler) =>
+				handler({ type: "before_agent_start" }, ctx),
+			),
+		)
+		expect(beforeResults).toEqual([undefined])
+	})
+
+	test("rejects an in-flight visible prompt when the session switches before settling", async () => {
+		const bus = new EventBus()
+		const store = new InMemoryStore()
+		const pi = new FakeVisiblePi()
+		const ctx = visibleCtx()
+		const runner = new PiVisibleLeadSessionRunner({
+			bus,
+			store,
+			pi: pi as unknown as VisiblePiApi,
+			getContext: () => ctx,
+			resolveVisibleRole: () => lead,
+			hiddenRunner: new FakeSessionRunner(bus),
+		})
+
+		const session = await runner.startOrResume(lead, ctx.cwd, "lead prompt", [
+			tool("define_mission"),
+		])
+		const promptDone = session.prompt("review item")
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(pi.sent).toHaveLength(1)
+
+		await pi.emit(
+			"session_before_switch",
+			{ type: "session_before_switch" },
+			ctx,
+		)
+		await expect(promptDone).rejects.toThrow("session switched")
+		expect(pi.activeTools).not.toContain("define_mission")
+	})
+
+	test("does not inject or prompt from an acquired handle after a same-role session id change", async () => {
+		const bus = new EventBus()
+		const store = new InMemoryStore()
+		const pi = new FakeVisiblePi()
+		const originalCtx = visibleCtx("visible-session-a")
+		const replacementCtx = visibleCtx("visible-session-b")
+		let currentCtx = originalCtx
+		const runner = new PiVisibleLeadSessionRunner({
+			bus,
+			store,
+			pi: pi as unknown as VisiblePiApi,
+			getContext: () => currentCtx,
+			resolveVisibleRole: () => lead,
+			hiddenRunner: new FakeSessionRunner(bus),
+		})
+
+		const session = await runner.startOrResume(
+			lead,
+			originalCtx.cwd,
+			"lead prompt",
+			[tool("define_mission")],
+		)
+		currentCtx = replacementCtx
+
+		const beforeResults = await Promise.all(
+			(pi.handlers.get("before_agent_start") ?? []).map((handler) =>
+				handler({ type: "before_agent_start" }, replacementCtx),
+			),
+		)
+		expect(beforeResults[0]).toBeUndefined()
+		await expect(session.prompt("review item")).rejects.toThrow(
+			"acquired lead session",
+		)
+		expect(pi.sent).toEqual([])
+	})
+
+	test("owners always use hidden sessions even if the visible session is attached to the lead", async () => {
+		const bus = new EventBus()
+		const store = new InMemoryStore()
+		const pi = new FakeVisiblePi()
+		const ctx = visibleCtx()
+		const runner = new PiVisibleLeadSessionRunner({
+			bus,
+			store,
+			pi: pi as unknown as VisiblePiApi,
+			getContext: () => ctx,
+			resolveVisibleRole: () => lead,
+			hiddenRunner: new FakeSessionRunner(bus),
+		})
+
+		const session = await runner.startOrResume(owner, ctx.cwd, "owner prompt", [
+			tool("request_review"),
+		])
+		expect(session.sessionId).toBe("fake-0")
+		expect(pi.registeredTools).toEqual([])
 	})
 })
