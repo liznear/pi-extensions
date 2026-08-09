@@ -36,6 +36,36 @@ let widgetCtx: ExtensionContext | undefined
 /** Throttle for delta-driven widget refreshes (stream chunks coalesce here). */
 const WIDGET_REFRESH_MS = 200
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Poll interval for the pinned missions widget. Mission state lives in the
+ * shared FileStore, so missions created/deleted by OTHER pi processes (other
+ * sessions driving /cc) never emit orchestrator events here; a periodic poll
+ * keeps the widget in sync with the store. Refreshes are cheap when nothing
+ * changed (lastWidgetSkeleton skips the re-render), so the poll only costs a
+ * store read per tick.
+ */
+const WIDGET_POLL_MS = 5000
+let widgetPollTimer: ReturnType<typeof setInterval> | undefined
+
+/** Start the periodic widget poll (idempotent; runs for the whole session). */
+function startWidgetPolling(): void {
+	if (widgetPollTimer) return
+	widgetPollTimer = setInterval(() => {
+		void refreshMissionsWidget().catch((error) => {
+			console.error("Command Center widget poll failed:", error)
+		})
+	}, WIDGET_POLL_MS)
+}
+
+/** Stop the periodic widget poll (session teardown). */
+function stopWidgetPolling(): void {
+	if (widgetPollTimer) {
+		clearInterval(widgetPollTimer)
+		widgetPollTimer = undefined
+	}
+}
+
 /** The last rendered table skeleton; an identical skeleton skips a re-render. */
 let lastWidgetSkeleton: string | undefined
 /** Live per-item activity, keyed by `<missionId>:<workItemId>`. */
@@ -308,6 +338,9 @@ async function refreshMissionsWidget(): Promise<void> {
 	const missions = await orch.store.listMissions()
 	const related = relatedMissions(missions, ctx.cwd)
 	if (related.length === 0) {
+		// No missions for this repo — clear the widget. Skip the redundant call
+		// when it's already cleared (repeated poll ticks call this every 5s).
+		if (lastWidgetSkeleton === undefined) return
 		ctx.ui.setWidget(MISSIONS_WIDGET_KEY, undefined)
 		lastWidgetSkeleton = undefined
 		return
@@ -463,6 +496,7 @@ export default function (pi: ExtensionAPI) {
 		// skeleton so the widget is always (re)built for the new session.
 		widgetCtx = ctx
 		lastWidgetSkeleton = undefined
+		startWidgetPolling()
 		queueAttachmentGate(ctx)
 		await refreshMissionsWidget()
 
@@ -502,6 +536,7 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", () => {
+		stopWidgetPolling()
 		queueAttachmentGate(undefined)
 		// The runner clears extension widgets on teardown; dropping the context
 		// stops background-drive events from touching a torn-down UI. The next
