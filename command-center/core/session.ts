@@ -305,6 +305,7 @@ interface ActiveVisibleLead {
 	systemPrompt: string
 	tools: ToolDefinition[]
 	toolNames: string[]
+	bridgedToolEventKeys: Set<string>
 }
 
 interface VisibleWaiter {
@@ -378,6 +379,7 @@ export class PiVisibleLeadSessionRunner implements SessionRunner {
 			systemPrompt: fullSystemPrompt,
 			tools: domainTools,
 			toolNames: domainTools.map((tool) => tool.name),
+			bridgedToolEventKeys: new Set(),
 		}
 
 		emitSessionStarted(this.opts.bus, who, sessionId)
@@ -442,11 +444,9 @@ export class PiVisibleLeadSessionRunner implements SessionRunner {
 			onRawSessionEvent(eventName, async (event, ctx) => {
 				const active = await this.matchingActiveLead(ctx)
 				if (!active) return
-				const normalized = normalizePiEvent(
-					active.who,
-					active.sessionId,
-					event as AgentSessionEvent,
-				)
+				const raw = event as AgentSessionEvent
+				if (this.seenVisibleToolEvent(active, raw)) return
+				const normalized = normalizePiEvent(active.who, active.sessionId, raw)
 				if (normalized) this.opts.bus.emit(normalized)
 			})
 		}
@@ -457,6 +457,22 @@ export class PiVisibleLeadSessionRunner implements SessionRunner {
 			const waiters = this.waiters.splice(0)
 			for (const waiter of waiters) waiter.resolve()
 		})
+	}
+
+	private seenVisibleToolEvent(
+		active: ActiveVisibleLead,
+		event: AgentSessionEvent,
+	): boolean {
+		if (
+			event.type !== "tool_execution_start" &&
+			event.type !== "tool_execution_end"
+		) {
+			return false
+		}
+		const key = `${event.type}:${event.toolCallId}`
+		if (active.bridgedToolEventKeys.has(key)) return true
+		active.bridgedToolEventKeys.add(key)
+		return false
 	}
 
 	private async matchingActiveLead(
