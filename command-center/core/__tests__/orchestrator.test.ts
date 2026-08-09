@@ -28,6 +28,8 @@ interface FakeAgents {
 	ownerSummary?: (itemId: number) => string
 	leadDecision?: (itemId: number) => "accept" | "rework" | "cancel"
 	leadFeedback?: string
+	ownerHelpReason?: string
+	leadGuidance?: string
 	concurrency?: number
 	driverLock?: DriverLock
 }
@@ -71,6 +73,7 @@ function makeOrch(agents: FakeAgents = {}): {
 	}
 	const ownerSummary = agents.ownerSummary ?? ((id) => `Done item ${id}`)
 	const leadDecision = agents.leadDecision ?? (() => "accept" as const)
+	const helpedOwners = new Set<string>()
 
 	// Capture the runner the factory creates so tests can inspect its sessions.
 	let runner!: FakeSessionRunner
@@ -82,9 +85,14 @@ function makeOrch(agents: FakeAgents = {}): {
 				onPrompt: async (session, text) => {
 					const missionId = session.who.missionId
 					if (session.who.roleName === "mission_lead") {
-						if (text.includes("Define the mission")) {
-							await simulateDefineMission(store, orchBus, missionId, text)
-							await simulateWritePlan(store, orchBus, missionId, leadPlan)
+						if (text.includes("requested help")) {
+							const itemId = extractItemId(text)
+							await simulateRespondToHelp(
+								orchBus,
+								missionId,
+								itemId,
+								agents.leadGuidance ?? "Try the smaller change first.",
+							)
 						} else if (text.includes("ready for review")) {
 							const itemId = extractItemId(text)
 							await simulateReviewWorkItem(
@@ -104,19 +112,38 @@ function makeOrch(agents: FakeAgents = {}): {
 								description: "Address the rejection feedback",
 								dependencies: [],
 							})
+						} else if (text.includes("Define the mission")) {
+							await simulateDefineMission(store, orchBus, missionId, text)
+							await simulateWritePlan(store, orchBus, missionId, leadPlan)
 						}
 					} else if (session.who.roleName === "work_item_owner") {
 						if (
 							text.includes("has been assigned") ||
-							text.includes("sent back for rework")
+							text.includes("sent back for rework") ||
+							text.includes("Mission Lead has responded")
 						) {
 							const itemId = session.who.workItemId!
-							await simulateRequestReview(
-								orchBus,
-								missionId,
-								itemId,
-								ownerSummary(itemId),
-							)
+							const helpKey = `${missionId}:${itemId}`
+							if (
+								agents.ownerHelpReason &&
+								text.includes("has been assigned") &&
+								!helpedOwners.has(helpKey)
+							) {
+								helpedOwners.add(helpKey)
+								await simulateRequestHelp(
+									orchBus,
+									missionId,
+									itemId,
+									agents.ownerHelpReason,
+								)
+							} else {
+								await simulateRequestReview(
+									orchBus,
+									missionId,
+									itemId,
+									ownerSummary(itemId),
+								)
+							}
 						}
 					}
 				},
@@ -216,6 +243,45 @@ async function simulateRequestReview(
 		toolName: "request_review",
 		result: {
 			details: { kind: "request_review", workItemId: itemId, summary },
+		},
+		isError: false,
+	})
+}
+
+async function simulateRequestHelp(
+	bus: EventBus,
+	missionId: string,
+	itemId: number,
+	reason: string,
+) {
+	bus.emit({
+		type: "tool-call-ended",
+		missionId,
+		roleName: "work_item_owner",
+		workItemId: itemId,
+		toolCallId: `tc-rh-${itemId}`,
+		toolName: "request_help",
+		result: {
+			details: { kind: "request_help", workItemId: itemId, reason },
+		},
+		isError: false,
+	})
+}
+
+async function simulateRespondToHelp(
+	bus: EventBus,
+	missionId: string,
+	itemId: number,
+	guidance: string,
+) {
+	bus.emit({
+		type: "tool-call-ended",
+		missionId,
+		roleName: "mission_lead",
+		toolCallId: `tc-rth-${itemId}`,
+		toolName: "respond_to_help",
+		result: {
+			details: { kind: "respond_to_help", workItemId: itemId, guidance },
 		},
 		isError: false,
 	})
@@ -441,7 +507,7 @@ describe("Orchestrator — provisioning failure leaves no orphan", () => {
 
 describe("Orchestrator — happy path (all items accepted)", () => {
 	test("dispatches items in dependency order, accepts each, rolls up to ready_for_acceptance", async () => {
-		const { orch, store, wt } = makeOrch({})
+		const { orch, store, wt, runner } = makeOrch({})
 		const events = collect(orch)
 
 		const missionId = await orch.defineMission("Test mission", {
@@ -459,11 +525,63 @@ describe("Orchestrator — happy path (all items accepted)", () => {
 		expect(wt.calls).toContain(`removeOwner:${missionId}:1`)
 		expect(wt.calls).toContain(`removeOwner:${missionId}:2`)
 
+		const lead = runner.sessions.get(`${missionId}:mission_lead:_`)
+		const reviewPrompt = lead?.prompts.find((p) =>
+			p.includes("ready for review"),
+		)
+		expect(reviewPrompt).toContain("[Command Center]")
+		expect(reviewPrompt).toContain("System notice")
+		expect(reviewPrompt).toContain("- Work item: #1")
+		expect(reviewPrompt).toContain("- Description: Do A")
+		expect(reviewPrompt).toContain("- Dependencies: none")
+		expect(reviewPrompt).toContain(`- Owner's branch: cc/${missionId}/work/1`)
+		expect(reviewPrompt).toContain("Owner's summary:")
+		expect(reviewPrompt).toContain("review_work_item({ workItemId: 1")
+
 		const statusChanges = events.filter(
 			(e) => e.type === "work-item-status-changed",
 		)
 		expect(statusChanges.length).toBeGreaterThanOrEqual(4)
 		expect(lastEvent(events, "mission-status-changed")).toBeDefined()
+	})
+})
+
+describe("Orchestrator — lead prompt framing", () => {
+	test("frames owner help requests as visible Command Center lead injections", async () => {
+		const { orch, store, runner } = makeOrch({
+			leadPlan: {
+				items: [
+					{
+						title: "Need API guidance",
+						description: "Choose the safest integration API",
+						dependencies: [],
+					},
+				],
+			},
+			ownerHelpReason: "I cannot tell which API is stable.",
+			leadGuidance: "Use the documented stable API.",
+		})
+
+		const missionId = await orch.defineMission("Test mission", {
+			repoPath: "/test-repo",
+		})
+
+		expect((await store.readMission(missionId))?.status).toBe(
+			"ready_for_acceptance",
+		)
+		const lead = runner.sessions.get(`${missionId}:mission_lead:_`)
+		const helpPrompt = lead?.prompts.find((p) => p.includes("requested help"))
+		expect(helpPrompt).toContain("[Command Center]")
+		expect(helpPrompt).toContain("System notice")
+		expect(helpPrompt).toContain("- Work item: #1")
+		expect(helpPrompt).toContain(
+			"- Description: Choose the safest integration API",
+		)
+		expect(helpPrompt).toContain("- Dependencies: none")
+		expect(helpPrompt).toContain(`- Owner's branch: cc/${missionId}/work/1`)
+		expect(helpPrompt).toContain("Owner's reason:")
+		expect(helpPrompt).toContain("I cannot tell which API is stable.")
+		expect(helpPrompt).toContain("respond_to_help({ workItemId: 1")
 	})
 })
 
@@ -492,7 +610,7 @@ describe("Orchestrator — rework loop", () => {
 
 describe("Orchestrator — cancel", () => {
 	test("cancel verdict → item cancelled, worktree torn down", async () => {
-		const { orch, store, wt } = makeOrch({
+		const { orch, store, wt, runner } = makeOrch({
 			leadDecision: () => "cancel",
 		})
 
@@ -504,6 +622,17 @@ describe("Orchestrator — cancel", () => {
 		// Item 1 cancelled; item 2 (depends on 1) can never be ready → stuck path.
 		expect(plan?.items[0]?.status).toBe("cancelled")
 		expect(wt.calls).toContain(`removeOwner:${missionId}:1`)
+
+		const lead = runner.sessions.get(`${missionId}:mission_lead:_`)
+		const stuckPrompt = lead?.prompts.find((p) =>
+			p.includes("The plan cannot progress"),
+		)
+		expect(stuckPrompt).toContain("[Command Center]")
+		expect(stuckPrompt).toContain("Plan cannot progress")
+		expect(stuckPrompt).toContain('#2 ("Item B")')
+		expect(stuckPrompt).toContain("Description: Do B")
+		expect(stuckPrompt).toContain("Cancelled items: #1")
+		expect(stuckPrompt).toContain("Call write_plan")
 	})
 })
 
@@ -525,7 +654,7 @@ describe("Orchestrator — reviewMission HITL", () => {
 	})
 
 	test("reject → mission back to in_progress, then re-drains to ready_for_acceptance (the gate can loop)", async () => {
-		const { orch, store } = makeOrch({})
+		const { orch, store, runner } = makeOrch({})
 		const missionId = await orch.defineMission("Test mission", {
 			repoPath: "/test-repo",
 		})
@@ -542,6 +671,15 @@ describe("Orchestrator — reviewMission HITL", () => {
 		const plan = await store.readPlan(missionId)
 		expect(plan?.items.length).toBe(3)
 		expect(plan?.items.every((i) => i.status === "accepted")).toBe(true)
+
+		const lead = runner.sessions.get(`${missionId}:mission_lead:_`)
+		const rejectPrompt = lead?.prompts.find((p) =>
+			p.includes("Human rejection feedback"),
+		)
+		expect(rejectPrompt).toContain("[Command Center]")
+		expect(rejectPrompt).toContain("rejected at the Acceptance gate")
+		expect(rejectPrompt).toContain("Needs more polish")
+		expect(rejectPrompt).toContain("Call write_plan")
 	})
 })
 

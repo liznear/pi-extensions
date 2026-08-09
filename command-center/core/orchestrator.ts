@@ -70,6 +70,39 @@ export interface OrchestratorOptions {
 	driverLock?: DriverLock
 }
 
+function formatDependencies(dependencies: readonly number[]): string {
+	return dependencies.length > 0 ? dependencies.join(", ") : "none"
+}
+
+function formatWorkItemContext(item: WorkItem, ownerBranch?: string): string[] {
+	const lines = [
+		`- Work item: #${item.id} ("${item.title}")`,
+		`- Description: ${item.description || "(none provided)"}`,
+		`- Dependencies: ${formatDependencies(item.dependencies)}`,
+	]
+	if (ownerBranch) lines.push(`- Owner's branch: ${ownerBranch}`)
+	return lines
+}
+
+function commandCenterLeadMessage(args: {
+	missionId: string
+	event: string
+	body: string
+	directive: string
+}): string {
+	return [
+		"[Command Center]",
+		"System notice: automated Command Center injection for the Mission Lead — not a human-typed chat message.",
+		"",
+		`Mission: ${args.missionId}`,
+		`Event: ${args.event}`,
+		"",
+		args.body.trim(),
+		"",
+		`Required lead action: ${args.directive}`,
+	].join("\n")
+}
+
 export class Orchestrator {
 	readonly store: Store
 	/**
@@ -531,11 +564,22 @@ export class Orchestrator {
 			await this.transitionMission(missionId, "in_progress")
 			const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 			const session = await this.acquireSession(lead)
-			const prompt =
-				`The mission was rejected at the Acceptance gate.\n` +
-				`Feedback: ${feedback ?? "(none provided)"}\n\n` +
-				`Re-plan: add new work items (via write_plan) to address the feedback. ` +
-				`Accepted items stay accepted (they are terminal); compose new items on top of them.`
+			const prompt = commandCenterLeadMessage({
+				missionId,
+				event: "Mission rejected at the Acceptance gate",
+				body: [
+					"The mission was rejected at the Acceptance gate.",
+					"",
+					`Mission title: ${mission.title}`,
+					"",
+					"Human rejection feedback:",
+					feedback ?? "(none provided)",
+					"",
+					"Accepted items stay accepted (they are terminal); compose new work on top of them.",
+				].join("\n"),
+				directive:
+					"Call write_plan to add or edit work items that address the rejection feedback. Do not respond only in prose.",
+			})
 			await this.promptAndCollect(session, prompt)
 			await this.dispatchAndDrive(missionId)
 		} finally {
@@ -905,12 +949,19 @@ export class Orchestrator {
 
 		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 		const session = await this.acquireSession(lead)
-		const prompt =
-			`The owner of Work item #${itemId} ("${item.title}") has requested help and is blocked.\n\n` +
-			`Reason:\n${reason}\n\n` +
-			`Owner's branch: ${ownerBranch}\n\n` +
-			`Provide clear, actionable guidance using the respond_to_help tool to unblock them. ` +
-			`Alternatively, if the item is no longer viable, you may cancel it using write_plan.`
+		const prompt = commandCenterLeadMessage({
+			missionId,
+			event: "Work item owner requested help",
+			body: [
+				`The owner of Work item #${itemId} ("${item.title}") has requested help and is blocked.`,
+				"",
+				...formatWorkItemContext(item, ownerBranch),
+				"",
+				"Owner's reason:",
+				reason,
+			].join("\n"),
+			directive: `Call respond_to_help({ workItemId: ${itemId}, guidance }) with clear, actionable guidance to unblock the owner. If the item is no longer viable, call write_plan to cancel or re-plan it instead. Do not respond only in prose.`,
+		})
 
 		const events = await this.promptAndCollect(session, prompt)
 
@@ -960,24 +1011,34 @@ export class Orchestrator {
 			(i) => i.status === "pending" && !computeReadySet(plan).includes(i.id),
 		)
 		const cancelled = plan.items.filter((i) => i.status === "cancelled")
-		const lines = stuck.map(
-			(i) =>
-				`#${i.id} ("${i.title}") is pending with unsatisfied dependencies ` +
-				`[${i.dependencies.join(", ")}].`,
+		const lines = stuck.map((i) =>
+			[
+				`#${i.id} ("${i.title}") is pending with unsatisfied dependencies [${i.dependencies.join(", ")}].`,
+				`Description: ${i.description || "(none provided)"}`,
+			].join("\n"),
 		)
 		if (cancelled.length > 0) {
 			lines.push(
-				`Cancelled items: ${cancelled.map((i) => `#${i.id}`).join(", ")}.`,
+				`Cancelled items: ${cancelled
+					.map(
+						(i) =>
+							`#${i.id} ("${i.title}", deps: ${formatDependencies(i.dependencies)})`,
+					)
+					.join(", ")}.`,
 			)
 		}
 
 		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 		const session = await this.acquireSession(lead)
-		const prompt =
-			`The plan cannot progress. The following items are blocked:\n\n` +
-			lines.join("\n") +
-			`\n\nRe-plan: edit dependencies (write_plan), add a replacement item, ` +
-			`or the plan is otherwise undrainable.`
+		const prompt = commandCenterLeadMessage({
+			missionId,
+			event: "Plan cannot progress",
+			body:
+				"The plan cannot progress. The following items are blocked:\n\n" +
+				lines.join("\n\n"),
+			directive:
+				"Call write_plan to edit dependencies, add replacement work items, or cancel/re-plan impossible work so the DAG can drain. Do not respond only in prose.",
+		})
 		await this.promptAndCollect(session, prompt)
 	}
 
@@ -1173,8 +1234,7 @@ export class Orchestrator {
 		itemId: number,
 	): Promise<string> {
 		const item = await this.getItem(missionId, itemId)
-		const deps =
-			item.dependencies.length > 0 ? item.dependencies.join(", ") : "none"
+		const deps = formatDependencies(item.dependencies)
 		return (
 			`Work item #${itemId} ("${item.title}") has been assigned to you.\n\n` +
 			`Description: ${item.description}\n` +
@@ -1189,21 +1249,23 @@ export class Orchestrator {
 		reviewRequest: Event,
 	): Promise<string> {
 		const item = await this.getItem(missionId, itemId)
-		const deps =
-			item.dependencies.length > 0 ? item.dependencies.join(", ") : "none"
 		const summary =
 			(reviewRequest as { result?: { details?: { summary?: string } } }).result
 				?.details?.summary ?? "(no summary)"
 		const ownerBranch = `cc/${missionId}/work/${itemId}`
-		return (
-			`Work item #${itemId} ("${item.title}") is ready for review.\n\n` +
-			`Description: ${item.description}\n` +
-			`Dependencies: ${deps}\n` +
-			`Owner's summary: ${summary}\n` +
-			`Owner's branch: ${ownerBranch}\n\n` +
-			`Inspect the change (git diff/log the owner's branch against integration), ` +
-			`then call review_work_item with your verdict.`
-		)
+		return commandCenterLeadMessage({
+			missionId,
+			event: "Work item ready for review",
+			body: [
+				`Work item #${itemId} ("${item.title}") is ready for review.`,
+				"",
+				...formatWorkItemContext(item, ownerBranch),
+				"",
+				"Owner's summary:",
+				summary,
+			].join("\n"),
+			directive: `Inspect the change (git diff/log the owner's branch against integration), then call review_work_item({ workItemId: ${itemId}, decision, feedback? }) with your verdict. Do not provide the verdict only in prose.`,
+		})
 	}
 
 	private reworkPrompt(itemId: number, feedback: string): string {
