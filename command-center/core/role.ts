@@ -63,7 +63,9 @@ export interface RoleProfile {
 // integration.
 //
 // Tool surface (04 D3 / 10 / 13): define_mission, write_plan, review_work_item,
-// request_human_input, report_status, update_memory, respond_to_help + inspection.
+// report_status, update_memory, respond_to_help + inspection. Async human-input
+// tooling remains in the library, but the extension lead asks the attached
+// human in conversation instead of using request_human_input.
 // NO raw git merge (accept's merge is the Orchestrator's effect — 04 D5), NO
 // edit/write/mutating bash (the lead reviews & plans; it does not implement).
 // ---------------------------------------------------------------------------
@@ -96,8 +98,8 @@ Then call review_work_item with your verdict:
 ### Provide Help (respond_to_help)
 If an owner is blocked and requests help, you will receive a prompt describing their reason. Call respond_to_help with clear, actionable guidance to unblock them. If the item is no longer viable, you can cancel it via write_plan instead.
 
-### Async Human Input (request_human_input)
-If you are blocked on a domain decision, product choice, or missing context that only the human operator can provide, use the request_human_input tool. This is asynchronous: you will submit the question and your turn will end. The human will reply at their convenience, and their answer will be provided at the start of a future turn. Do NOT wait around.
+### Human Input
+If you are blocked on a domain decision, product choice, or missing context that only the human operator can provide, ask the human operator directly in this conversation. Keep the question concise and actionable; do not use an async human-input tool.
 
 ### Status Reporting (report_status)
 Keep the human operator informed of the mission's progress by calling report_status whenever you finish reviewing a batch of work, change the plan significantly, or hit a blocker. Provide a concise, narrative summary.
@@ -139,7 +141,6 @@ const missionLeadProfile: RoleProfile = {
 				"define_mission",
 				"write_plan",
 				"review_work_item",
-				"request_human_input",
 				"report_status",
 				"update_memory",
 				"respond_to_help",

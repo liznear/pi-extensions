@@ -62,7 +62,6 @@ describe("mission_lead profile", () => {
 		expect(names.has("write_plan")).toBe(true)
 		expect(names.has("review_work_item")).toBe(true)
 		expect(names.has("update_memory")).toBe(true) // tool name unified to snake_case (was camelCase per ticket 02)
-		expect(names.has("request_human_input")).toBe(true)
 		expect(names.has("report_status")).toBe(true)
 		expect(names.has("respond_to_help")).toBe(true)
 	})
@@ -83,6 +82,11 @@ describe("mission_lead profile", () => {
 	test("does NOT have request_review (that's an owner tool)", () => {
 		const names = toolNames(profile.build(ctx(lead)))
 		expect(names.has("request_review")).toBe(false)
+	})
+
+	test("does NOT have request_human_input (the attached human answers in conversation)", () => {
+		const names = toolNames(profile.build(ctx(lead)))
+		expect(names.has("request_human_input")).toBe(false)
 	})
 
 	test("prompt instructs inspection-before-verdict + forbids merging", () => {

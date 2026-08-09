@@ -219,7 +219,7 @@ export class Orchestrator {
 	 * Resume a single mission and drive it to its next park point (idle at the
 	 * acceptance gate, stuck, or terminal). Driving is ALWAYS explicit — there
 	 * is no auto-resume at startup: this is called by the host (/cc resume) or
-	 * by re-drives after human input (replyHumanInput).
+	 * another host-facing drive method.
 	 *
 	 * Taking over an in-flight drive in another process is intended behavior for
 	 * explicit host commands: by default this force-acquires the mission's driver
@@ -268,32 +268,64 @@ export class Orchestrator {
 	}
 
 	/**
-	 * Reply to a human input request and re-drive the lead.
+	 * Headless/library seam for async human input. The Pi extension no longer
+	 * exposes this as `/cc reply`; attached humans answer the visible lead in
+	 * conversation. Hosts that still use request_human_input can call this
+	 * method to deliver the answer as an explicit lead prompt and re-drive.
 	 */
 	async replyHumanInput(
 		missionId: string,
 		requestId: string,
 		reply: string,
 	): Promise<void> {
-		const requests = await this.store.readHumanInputRequests(missionId)
-		const req = requests.find((r) => r.requestId === requestId)
-		if (!req) throw new Error(`Unknown human input request: ${requestId}`)
-		if (req.status !== "open")
-			throw new Error(`Request ${requestId} is already answered`)
+		await this.acquireDriveLock(missionId, true)
+		try {
+			const mission = await this.store.readMission(missionId)
+			if (!mission) throw new Error(`Unknown mission: ${missionId}`)
+			this.repoByMission.set(missionId, mission.repoPath)
 
-		req.reply = reply
-		await this.store.writeHumanInputRequest(missionId, req)
+			const requests = await this.store.readHumanInputRequests(missionId)
+			const req = requests.find((r) => r.requestId === requestId)
+			if (!req) throw new Error(`Unknown human input request: ${requestId}`)
+			if (req.status !== "open")
+				throw new Error(`Request ${requestId} is already answered`)
 
-		this.bus.emit({
-			type: "human-input-replied",
-			missionId,
-			requestId,
-			reply,
-			roleName: "mission_lead",
-		})
+			req.reply = reply
+			req.status = "answered"
+			await this.store.writeHumanInputRequest(missionId, req)
 
-		// Re-derive lead obligation
-		await this.resumeMission(missionId)
+			this.bus.emit({
+				type: "human-input-replied",
+				missionId,
+				requestId,
+				reply,
+				roleName: "mission_lead",
+			})
+
+			if (await this.driveHostParked(missionId)) return
+			const events = await this.withLead(async () => {
+				const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
+				const session = await this.acquireSession(lead)
+				const prompt = commandCenterLeadMessage({
+					missionId,
+					event: "Human input answered",
+					body: [
+						`Request ${requestId}:`,
+						req.question,
+						"",
+						"Human answer:",
+						reply,
+					].join("\n"),
+					directive:
+						"Use this answer to continue the mission. If the plan needs to change, call write_plan; otherwise continue driving the current plan.",
+				})
+				return this.promptAndCollectOrPark(missionId, session, prompt)
+			})
+			if (!events) return
+			await this.dispatchAndDrive(missionId)
+		} finally {
+			await this.driverLock.release(missionId)
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -1179,27 +1211,6 @@ export class Orchestrator {
 		// Track the session so consumers can attach to / abort it (getActiveSession,
 		// abortWorkItem, abortMission). Same role ⇒ same key ⇒ latest handle wins.
 		this.activeSessions.set(this.sessionKey(who), session)
-
-		// Ticket 10: Human-input reply injection at lead session start.
-		if (who.roleName === "mission_lead") {
-			const requests = await this.store.readHumanInputRequests(who.missionId)
-			const openReplied = requests.filter((r) => r.status === "open" && r.reply)
-			if (openReplied.length > 0) {
-				let injection =
-					"The human operator has replied to your input requests:\n\n"
-				for (const r of openReplied) {
-					injection += `Request: "${r.question}"\nReply: ${r.reply}\n\n`
-					// Mark as consumed (answered)
-					r.status = "answered"
-					await this.store.writeHumanInputRequest(who.missionId, r)
-				}
-				injection += "Continue with your work."
-				// Fire-and-forget prompt injection (it queues in the session)
-				session.prompt(injection).catch((err) => {
-					console.error("Failed to inject human replies into lead session", err)
-				})
-			}
-		}
 
 		return session
 	}

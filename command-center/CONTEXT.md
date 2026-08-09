@@ -85,17 +85,19 @@ items are accepted. The human accepts (Mission → completed) or rejects with fe
 _Avoid_: approval, sign-off
 
 **Human Input Request**:
-A transient, Mission-Lead-authored async question to the human — the lead asks now, the
-human answers whenever. Optionally scoped to a Work Item (`workItemId`) and optionally
-offering choices (`options`); identified by a unique `requestId`; removed once the lead
-consumes the reply.
+A library/headless async question record produced by `request_human_input`. The Pi
+extension's Mission Lead does not use this path: because drives are gated on the human
+being attached to the lead session, the lead asks in conversation and the human types the
+answer there. Retained for non-extension consumers that still provide an async human
+channel.
 _Avoid_: prompt, question, ticket
 
 **Message Inbox**:
-The persisted per-Mission set of live Human Input Requests
-(`missions/<id>/human-input.json`) — the human↔Mission-Lead channel. Holds only requests
-still in flight (`open` or `answered`-not-yet-consumed); consumed or mission-end-swept
-records are discarded.
+The legacy/headless per-Mission backing store for Human Input Requests
+(`missions/<id>/human-input.json`). It is not the Pi extension's human↔Mission-Lead
+channel; extension conversations carry human answers directly in the visible lead
+session. Non-extension hosts may still use it to track async requests and delivered
+replies.
 _Avoid_: mailbox, queue, channel
 
 **Status Report**:
@@ -111,10 +113,10 @@ _Avoid_: progress note, update, log
 A Work Item Owner's signal that it is blocked _mid-work_ — ambiguous spec, needs a decision,
 missing a credential, found a conflict — distinct from `request_review` (which asserts the
 item is _done_). Filed via the owner-only `request_help({ reason })`; the Mission Lead
-triages and responds via `respond_to_help` (guidance), re-plans, or escalates to a Human
-Input Request on the owner's behalf. The item stays `in_progress` (a non-status signal); one
-outstanding per item. Not persisted (re-derived on resume); the durable "waiting on the
-human" signal, if the lead escalates, is the Human Input Request, not the Help Request.
+triages and responds via `respond_to_help` (guidance), re-plans, or asks the attached
+human in the lead conversation. The item stays `in_progress` (a non-status signal); one
+outstanding per item. Not persisted (re-derived on resume); any human clarification in
+the extension lives in the lead conversation, not in the Help Request.
 _Avoid_: escalation, blocker, ticket
 
 **Launch**:
@@ -137,8 +139,8 @@ The cross-process protocol that guarantees a Mission has at most one driver at a
 a per-Mission advisory lock file (`<storeRoot>/missions/<id>/driver.lock`) recording the
 driving Run's pid + hostname. A Run acquires the lock before any drive entry point and
 releases it when the drive parks or the Mission terminates. Explicit commands
-(`/cc launch` / `resume` / `reply` / `accept` / `reject` / `abort` / `delete`) take the
-lock over; a displaced driver stops at its next loop iteration. A lock whose holder's pid
+(`/cc launch` / `resume` / `accept` / `reject` / `abort` / `delete`) take the lock over;
+a displaced driver stops at its next loop iteration. A lock whose holder's pid
 is dead (crash) is stale and reclaimable. Read-only commands (`list`, `attach`) don't
 drive, but `attach` refuses a Mission another live process is driving. `/cc new` opens
 the lead's session for interactive definition without driving, so it takes no lock.
@@ -147,8 +149,8 @@ _Avoid_: mutex, semaphore, lease
 **Resume**:
 The act of a Run reconstructing the Orchestrator's in-flight view from persisted state and
 re-entering the dispatch/plan-review loop — always explicit, never automatic: a Run
-resumes because a host called a drive method (`/cc launch`, `/cc resume`, a human-input
-reply, an accept/reject decision), not because a session started. Loop position is
+resumes because a host called a drive method (`/cc launch`, `/cc resume`, an
+accept/reject decision, or a headless API), not because a session started. Loop position is
 _derived_ from the persisted Mission/Plan (the Work-Item status machine is the
 checkpoint), never stored or replayed; a turn interrupted by a crash is re-driven, not
 replayed.

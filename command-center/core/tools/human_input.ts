@@ -25,9 +25,9 @@ const RequestHumanInputSchema = Type.Object({
 })
 
 /**
- * Creates the `request_human_input` tool for the mission lead (ticket 04 / 10).
- * This tool allows the lead to request input from the human operator (async).
- * Fire-and-forget: it returns immediately, and the human replies later.
+ * Creates the `request_human_input` tool for custom/headless lead flows.
+ * The Pi extension lead does not include this tool; it asks the attached human
+ * in conversation instead. Headless hosts may still use the async inbox seam.
  */
 export function createRequestHumanInputTool(
 	store: Store,
@@ -38,7 +38,7 @@ export function createRequestHumanInputTool(
 		name: "request_human_input",
 		label: "Request Human Input",
 		description:
-			"Ask the human operator a question and wait for their response asynchronously. Do not wait for the response in this session; it will be provided to you at the start of a future session once the human replies.",
+			"Ask the human operator a question asynchronously. Do not wait for the response in this session; the host will deliver the answer in a future turn once the human replies.",
 		parameters: RequestHumanInputSchema,
 		execute: async (_toolCallId, args) => {
 			const requestId = randomBytes(4).toString("hex")
@@ -69,7 +69,7 @@ export function createRequestHumanInputTool(
 				content: [
 					{
 						type: "text",
-						text: `Request ${requestId} submitted. You will receive the answer in a future session. Continue with other work or end your turn.`,
+						text: `Request ${requestId} submitted. The host will deliver the answer in a future turn. Continue with other work or end your turn.`,
 					},
 				],
 				details: { requestId },
