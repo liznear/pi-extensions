@@ -1400,6 +1400,202 @@ describe("Orchestrator — driver lock (multi-process)", () => {
 		expect(lock.releaseCalls).toBe(1)
 	})
 
+	test("host attachment gate parks a drive before dispatch", async () => {
+		const lock = new RecordingLock()
+		const store = new InMemoryStore()
+		const gated = new Orchestrator({
+			store,
+			worktreeProvider: new FakeWorktreeProvider(),
+			driverLock: lock,
+			canDriveMission: () => false,
+			sessionRunner: (bus) => new FakeSessionRunner(bus),
+		})
+
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await store.writePlan("m1", {
+			items: [
+				{
+					id: 1,
+					title: "A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+
+		await gated.resumeMission("m1")
+
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe("pending")
+		expect(gated.isMissionDriveParked("m1")).toBe(true)
+		expect(lock.releaseCalls).toBe(1)
+	})
+
+	test("parkMissionDrive aborts active sessions and stops before lead review", async () => {
+		const store = new InMemoryStore()
+		const wt = new FakeWorktreeProvider()
+		const lock = new RecordingLock()
+
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await store.writePlan("m1", {
+			items: [
+				{
+					id: 1,
+					title: "A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+
+		let ownerStarted!: () => void
+		let releaseOwner!: () => void
+		const ownerStartedP = new Promise<void>((r) => {
+			ownerStarted = r
+		})
+		const ownerBlockedP = new Promise<void>((r) => {
+			releaseOwner = r
+		})
+
+		const orch = new Orchestrator({
+			store,
+			worktreeProvider: wt,
+			driverLock: lock,
+			sessionRunner: (bus) =>
+				new FakeSessionRunner(bus, {
+					onPrompt: async (session) => {
+						if (session.who.roleName !== "work_item_owner") return
+						ownerStarted()
+						await ownerBlockedP
+						bus.emit({
+							type: "tool-call-ended",
+							missionId: session.who.missionId,
+							roleName: "work_item_owner",
+							workItemId: session.who.workItemId,
+							toolCallId: "tc-1",
+							toolName: "request_review",
+							result: { details: { summary: "done" } },
+							isError: false,
+						})
+					},
+				}),
+		})
+
+		const drive = orch.resumeMission("m1")
+		await ownerStartedP
+		expect(orch.getActiveSession("m1", "work_item_owner", 1)).toBeDefined()
+		orch.parkMissionDrive("m1")
+		expect(orch.getActiveSession("m1", "work_item_owner", 1)).toBeUndefined()
+		releaseOwner()
+
+		await drive
+
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe(
+			"ready_for_review",
+		)
+		expect((await store.readMission("m1"))?.status).toBe("in_progress")
+		expect(orch.isMissionDriveParked("m1")).toBe(true)
+		expect(lock.releaseCalls).toBe(1)
+	})
+
+	test("a prompt rejection caused by parking is swallowed as a clean park", async () => {
+		const store = new InMemoryStore()
+		const wt = new FakeWorktreeProvider()
+		const lock = new RecordingLock()
+
+		await store.writeMission({
+			id: "m1",
+			repoPath: "/test-repo",
+			title: "m1",
+			description: "m1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await store.writePlan("m1", {
+			items: [
+				{
+					id: 1,
+					title: "A",
+					description: "Do A",
+					dependencies: [],
+					status: "pending",
+				},
+			],
+		})
+
+		let leadReviewStarted!: () => void
+		let rejectLeadReview!: () => void
+		const leadReviewStartedP = new Promise<void>((resolve) => {
+			leadReviewStarted = resolve
+		})
+		const leadReviewRejectedP = new Promise<void>((resolve) => {
+			rejectLeadReview = resolve
+		})
+
+		const orch = new Orchestrator({
+			store,
+			worktreeProvider: wt,
+			driverLock: lock,
+			sessionRunner: (bus) =>
+				new FakeSessionRunner(bus, {
+					onPrompt: async (session) => {
+						if (session.who.roleName === "work_item_owner") {
+							bus.emit({
+								type: "tool-call-ended",
+								missionId: session.who.missionId,
+								roleName: "work_item_owner",
+								workItemId: session.who.workItemId,
+								toolCallId: "tc-1",
+								toolName: "request_review",
+								result: { details: { summary: "done" } },
+								isError: false,
+							})
+							return
+						}
+						if (session.who.roleName === "mission_lead") {
+							leadReviewStarted()
+							await leadReviewRejectedP
+							throw new Error(
+								"Visible Command Center lead session switched before the turn settled",
+							)
+						}
+					},
+				}),
+		})
+
+		const drive = orch.resumeMission("m1")
+		await leadReviewStartedP
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe(
+			"ready_for_review",
+		)
+
+		orch.parkMissionDrive("m1")
+		rejectLeadReview()
+		await drive
+
+		expect((await store.readMission("m1"))?.status).toBe("in_progress")
+		expect((await store.readPlan("m1"))?.items[0]?.status).toBe(
+			"ready_for_review",
+		)
+		expect(orch.isMissionDriveParked("m1")).toBe(true)
+		expect(lock.releaseCalls).toBe(1)
+	})
+
 	test("a displaced driver stops mid-run when another process steals the lock", async () => {
 		const store = new InMemoryStore()
 		const wt = new FakeWorktreeProvider()

@@ -68,6 +68,12 @@ export interface OrchestratorOptions {
 	 * consumers / tests). A multi-process consumer wires a FileDriverLock.
 	 */
 	driverLock?: DriverLock
+	/**
+	 * Host attachment gate. Return false to park a drive that should no longer
+	 * run in this process (e.g. the visible session is no longer attached to the
+	 * mission lead's integration worktree). Defaults to always true.
+	 */
+	canDriveMission?: (missionId: string) => boolean | Promise<boolean>
 }
 
 function formatDependencies(dependencies: readonly number[]): string {
@@ -114,9 +120,13 @@ export class Orchestrator {
 	private readonly sessionSemaphore: Semaphore
 	private readonly sessionRunner: SessionRunner
 	private readonly worktree: WorktreeProvider
+	private readonly canDriveMission: (
+		missionId: string,
+	) => boolean | Promise<boolean>
 	/** Model C: missionId → the repo that mission runs in. */
 	private readonly repoByMission = new Map<string, string>()
 	private readonly activeDrives = new Map<string, Promise<void>>()
+	private readonly parkedDrives = new Set<string>()
 	private readonly helpRequestKeys = new Set<string>() // format: `${missionId}:${workItemId}`
 	private readonly planWriteLocks = new Map<string, Promise<void>>()
 	private readonly activeSessions = new Map<string, RoleSession>()
@@ -141,6 +151,7 @@ export class Orchestrator {
 		const concurrency = opts.concurrency ?? 2
 		this.sessionSemaphore = opts.sessionSemaphore ?? new Semaphore(concurrency)
 		this.worktree = opts.worktreeProvider ?? new WorktreeProvisioner()
+		this.canDriveMission = opts.canDriveMission ?? (() => true)
 		this.sessionRunner = opts.sessionRunner
 			? opts.sessionRunner(this.bus, this.store)
 			: new FakeSessionRunner(this.bus)
@@ -160,6 +171,22 @@ export class Orchestrator {
 		return this.bus.subscribe((e) => {
 			if (e.missionId === missionId) listener(e)
 		})
+	}
+
+	/**
+	 * Park this process's active drive for a mission. The active drive loop will
+	 * observe the park request at the same interruption checkpoints as driver-lock
+	 * displacement, abort role turns, and release the driver lock in its normal
+	 * finally block. The next explicit drive acquisition clears the park flag.
+	 */
+	parkMissionDrive(missionId: string): void {
+		this.parkedDrives.add(missionId)
+		this.abortMissionSessions(missionId)
+	}
+
+	/** True iff this process parked the mission's drive and no explicit resume cleared it. */
+	isMissionDriveParked(missionId: string): boolean {
+		return this.parkedDrives.has(missionId)
 	}
 
 	/**
@@ -194,15 +221,22 @@ export class Orchestrator {
 	 * is no auto-resume at startup: this is called by the host (/cc resume) or
 	 * by re-drives after human input (replyHumanInput).
 	 *
-	 * Taking over an in-flight drive in another process is intended behavior:
-	 * this force-acquires the mission's driver lock, and the displaced driver
-	 * stops at its next loop iteration.
+	 * Taking over an in-flight drive in another process is intended behavior for
+	 * explicit host commands: by default this force-acquires the mission's driver
+	 * lock, and the displaced driver stops at its next loop iteration. Hosts may
+	 * pass `force: false` for non-takeover re-attach resumes.
 	 *
 	 * @returns the displaced holder, when this call took the drive over from a
 	 *          live foreign process (undefined otherwise).
 	 */
-	async resumeMission(missionId: string): Promise<DriverLockInfo | undefined> {
-		const tookOverFrom = await this.acquireDriveLock(missionId, true)
+	async resumeMission(
+		missionId: string,
+		opts: { force?: boolean } = {},
+	): Promise<DriverLockInfo | undefined> {
+		const tookOverFrom = await this.acquireDriveLock(
+			missionId,
+			opts.force ?? true,
+		)
 		try {
 			const mission = await this.store.readMission(missionId)
 			if (!mission)
@@ -212,10 +246,16 @@ export class Orchestrator {
 			const plan = await this.store.readPlan(missionId)
 			if (!plan) {
 				// Mission stubbed but not planned (or planning was interrupted).
+				if (await this.driveHostParked(missionId)) return tookOverFrom
 				const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 				const session = await this.acquireSession(lead)
 				// Resume prompt signals continue
-				await this.promptAndCollect(session, "Continue with your work.")
+				const events = await this.promptAndCollectOrPark(
+					missionId,
+					session,
+					"Continue with your work.",
+				)
+				if (!events) return tookOverFrom
 				await this.dispatchAndDrive(missionId)
 				return tookOverFrom
 			}
@@ -435,9 +475,15 @@ export class Orchestrator {
 			// until the host launches it); a library-driven mission leaves pending
 			// here so its drive runs under the in_progress lifecycle.
 			await this.transitionMission(missionId, "in_progress")
+			if (await this.driveHostParked(missionId)) return
 			const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 			const session = await this.acquireSession(lead)
-			await this.promptAndCollect(session, this.missionStartPrompt(description))
+			const events = await this.promptAndCollectOrPark(
+				missionId,
+				session,
+				this.missionStartPrompt(description),
+			)
+			if (!events) return
 
 			// Drive the plan to completion.
 			await this.dispatchAndDrive(missionId)
@@ -562,6 +608,7 @@ export class Orchestrator {
 				rejectionFeedback: feedback,
 			})
 			await this.transitionMission(missionId, "in_progress")
+			if (await this.driveHostParked(missionId)) return
 			const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 			const session = await this.acquireSession(lead)
 			const prompt = commandCenterLeadMessage({
@@ -580,7 +627,12 @@ export class Orchestrator {
 				directive:
 					"Call write_plan to add or edit work items that address the rejection feedback. Do not respond only in prose.",
 			})
-			await this.promptAndCollect(session, prompt)
+			const events = await this.promptAndCollectOrPark(
+				missionId,
+				session,
+				prompt,
+			)
+			if (!events) return
 			await this.dispatchAndDrive(missionId)
 		} finally {
 			await this.driverLock.release(missionId)
@@ -650,10 +702,10 @@ export class Orchestrator {
 	 */
 	private async dispatchAndDrive(missionId: string): Promise<void> {
 		for (;;) {
-			// Another process force-took the driver lock mid-drive: stop now
-			// (abort in-flight turns). NoopDriverLock always reports "held by
-			// me", so in-process runs are unaffected.
-			if (await this.driveDisplaced(missionId)) {
+			// Another process force-took the driver lock, or the host attachment
+			// gate parked this drive: stop now (abort in-flight turns). NoopDriverLock
+			// always reports "held by me", so in-process-only runs are unaffected.
+			if (await this.driveShouldPark(missionId)) {
 				this.abortMissionSessions(missionId)
 				return
 			}
@@ -758,6 +810,7 @@ export class Orchestrator {
 			session = await this.acquireSession(owner)
 			prompt = "Continue with your work."
 		} else if (item.status === "ready_for_review") {
+			if (await this.driveHostParked(missionId)) return
 			const dummyReviewRequest: Event = {
 				type: "tool-call-ended",
 				missionId,
@@ -773,6 +826,7 @@ export class Orchestrator {
 			const verdict = await this.withLead(() =>
 				this.runReview(missionId, itemId, dummyReviewRequest),
 			)
+			if (verdict.parked) return
 			if (verdict.terminal) {
 				await this.worktree.removeOwnerWorktree(
 					this.repoFor(missionId),
@@ -789,8 +843,9 @@ export class Orchestrator {
 		}
 
 		for (;;) {
-			// Another process took over the drive; stop before the next prompt.
-			if (await this.driveDisplaced(missionId)) {
+			// Another process took over the drive, or the host parked it; stop before
+			// the next prompt.
+			if (await this.driveShouldPark(missionId)) {
 				this.activeSessions.get(this.sessionKey(owner))?.abort()
 				this.activeSessions.delete(this.sessionKey(owner))
 				return
@@ -798,7 +853,13 @@ export class Orchestrator {
 			let events: Event[] = []
 			try {
 				await this.sessionSemaphore.acquire()
-				events = await this.promptAndCollect(session, prompt)
+				const collected = await this.promptAndCollectOrPark(
+					missionId,
+					session,
+					prompt,
+				)
+				if (!collected) return
+				events = collected
 			} finally {
 				this.sessionSemaphore.release()
 			}
@@ -826,12 +887,17 @@ export class Orchestrator {
 				const helpKey = `${missionId}:${itemId}`
 				this.helpRequestKeys.add(helpKey)
 
+				if (await this.driveHostParked(missionId)) {
+					this.helpRequestKeys.delete(helpKey)
+					return
+				}
 				const triageVerdict = await this.withLead(() =>
 					this.runTriage(missionId, itemId, reason),
 				)
 
 				this.helpRequestKeys.delete(helpKey)
 
+				if (triageVerdict.parked) return
 				if (triageVerdict.cancelled) {
 					// The item was cancelled during triage via write_plan
 					await this.worktree.removeOwnerWorktree(
@@ -877,10 +943,12 @@ export class Orchestrator {
 				workItemId: itemId,
 			})
 
+			if (await this.driveHostParked(missionId)) return
 			const verdict = await this.withLead(() =>
 				this.runReview(missionId, itemId, reviewRequest),
 			)
 
+			if (verdict.parked) return
 			if (verdict.terminal) {
 				await this.worktree.removeOwnerWorktree(
 					this.repoFor(missionId),
@@ -899,7 +967,7 @@ export class Orchestrator {
 		missionId: string,
 		itemId: number,
 		reviewRequest: Event,
-	): Promise<{ terminal: boolean; feedback?: string }> {
+	): Promise<{ terminal: boolean; feedback?: string; parked?: boolean }> {
 		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 		const session = await this.acquireSession(lead)
 		const prompt = await this.reviewInputPrompt(
@@ -907,7 +975,8 @@ export class Orchestrator {
 			itemId,
 			reviewRequest,
 		)
-		const events = await this.promptAndCollect(session, prompt)
+		const events = await this.promptAndCollectOrPark(missionId, session, prompt)
+		if (!events) return { terminal: false, parked: true }
 
 		// Find the review_work_item tool call result. The lead's event has NO
 		// workItemId (lead identity has none); match on tool + roleName and read
@@ -943,7 +1012,7 @@ export class Orchestrator {
 		missionId: string,
 		itemId: number,
 		reason: string,
-	): Promise<{ cancelled: boolean; guidance?: string }> {
+	): Promise<{ cancelled: boolean; guidance?: string; parked?: boolean }> {
 		const item = await this.getItem(missionId, itemId)
 		const ownerBranch = `cc/${missionId}/work/${itemId}`
 
@@ -963,7 +1032,8 @@ export class Orchestrator {
 			directive: `Call respond_to_help({ workItemId: ${itemId}, guidance }) with clear, actionable guidance to unblock the owner. If the item is no longer viable, call write_plan to cancel or re-plan it instead. Do not respond only in prose.`,
 		})
 
-		const events = await this.promptAndCollect(session, prompt)
+		const events = await this.promptAndCollectOrPark(missionId, session, prompt)
+		if (!events) return { cancelled: false, parked: true }
 
 		// Did the lead cancel the item via write_plan during this turn?
 		const afterPlan = await this.store.readPlan(missionId)
@@ -1028,6 +1098,7 @@ export class Orchestrator {
 			)
 		}
 
+		if (await this.driveHostParked(missionId)) return
 		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 		const session = await this.acquireSession(lead)
 		const prompt = commandCenterLeadMessage({
@@ -1039,7 +1110,7 @@ export class Orchestrator {
 			directive:
 				"Call write_plan to edit dependencies, add replacement work items, or cancel/re-plan impossible work so the DAG can drain. Do not respond only in prose.",
 		})
-		await this.promptAndCollect(session, prompt)
+		await this.promptAndCollectOrPark(missionId, session, prompt)
 	}
 
 	// -----------------------------------------------------------------------
@@ -1198,6 +1269,41 @@ export class Orchestrator {
 			off()
 		}
 		return events
+	}
+
+	/**
+	 * Prompt a role, but convert prompt failures caused by parking/displacement
+	 * into a normal parked return. Visible lead prompts reject when the human
+	 * switches/shuts down the session; hidden prompts may reject after abort().
+	 * Those are expected consequences of parking and must not surface as mission
+	 * drive failures.
+	 */
+	private async promptAndCollectOrPark(
+		missionId: string,
+		session: RoleSession,
+		text: string,
+	): Promise<Event[] | undefined> {
+		try {
+			return await this.promptAndCollect(session, text)
+		} catch (error) {
+			if (await this.promptFailureMeansPark(missionId, error)) return undefined
+			throw error
+		}
+	}
+
+	private async promptFailureMeansPark(
+		missionId: string,
+		error: unknown,
+	): Promise<boolean> {
+		if (this.parkedDrives.has(missionId)) return true
+		if (!(await this.driverLock.isHeldByMe(missionId))) return true
+		if (await this.driveHostParked(missionId)) return true
+		if (isVisibleLeadDetachError(error)) {
+			this.parkedDrives.add(missionId)
+			this.abortMissionSessions(missionId)
+			return true
+		}
+		return false
 	}
 
 	// -----------------------------------------------------------------------
@@ -1392,11 +1498,24 @@ export class Orchestrator {
 					`(${result.holder.hostname}). Use /cc resume to take over.`,
 			)
 		}
+		this.parkedDrives.delete(missionId)
 		return result.tookOverFrom
 	}
 
-	/** True iff another process has force-taken our drive lock mid-run. */
-	private async driveDisplaced(missionId: string): Promise<boolean> {
+	/** True iff the host attachment gate has parked or should park this drive. */
+	private async driveHostParked(missionId: string): Promise<boolean> {
+		if (this.parkedDrives.has(missionId)) return true
+		if (!(await this.canDriveMission(missionId))) {
+			this.parkedDrives.add(missionId)
+			this.abortMissionSessions(missionId)
+			return true
+		}
+		return false
+	}
+
+	/** True iff the current drive should stop at its next interruption checkpoint. */
+	private async driveShouldPark(missionId: string): Promise<boolean> {
+		if (await this.driveHostParked(missionId)) return true
 		return !(await this.driverLock.isHeldByMe(missionId))
 	}
 
@@ -1430,6 +1549,11 @@ export class Orchestrator {
 
 // Re-export types consumers need.
 export type { FakeRoleSession, Mission, Plan }
+
+function isVisibleLeadDetachError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error)
+	return message.startsWith("Visible Command Center lead session ")
+}
 
 /**
  * A compact signature of a plan's structure (ids + statuses + deps) for change
