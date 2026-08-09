@@ -562,6 +562,127 @@ describe("Orchestrator — createMission (interactive definition)", () => {
 	})
 })
 
+describe("Orchestrator — bindVisibleLead (interactive definition after /cc new)", () => {
+	/**
+	 * A visible-lead runner whose "attachment" is dynamic: /cc new acquires
+	 * the lead while the visible session is still in the source repo (hidden
+	 * fallback), the extension switches the UI into the integration worktree,
+	 * and only then re-binds the lead to the visible session.
+	 */
+	function makeVisibleOrch(
+		attached: () => boolean,
+		missionIdRef: { current: string },
+	): {
+		orch: Orchestrator
+		pi: ScriptedVisiblePi
+		ctx: ExtensionContext
+		hidden: FakeSessionRunner
+		store: InMemoryStore
+	} {
+		const store = new InMemoryStore()
+		const ctx = visibleContext()
+		const pi = new ScriptedVisiblePi(ctx)
+		let hidden!: FakeSessionRunner
+		const orch = new Orchestrator({
+			store,
+			worktreeProvider: new FakeWorktreeProvider(),
+			sessionRunner: (bus, store) => {
+				hidden = new FakeSessionRunner(bus)
+				return new PiVisibleLeadSessionRunner({
+					bus,
+					store,
+					pi: pi as unknown as VisiblePiApi,
+					getContext: () => ctx,
+					resolveVisibleRole: () =>
+						attached()
+							? { missionId: missionIdRef.current, roleName: "mission_lead" }
+							: undefined,
+					hiddenRunner: hidden,
+				})
+			},
+		})
+		return { orch, pi, ctx, hidden, store }
+	}
+
+	test("re-binds the pending lead to the visible session after the switch, registering its domain tools", async () => {
+		let attached = false
+		const missionIdRef = { current: "" }
+		const { orch, pi, hidden } = makeVisibleOrch(() => attached, missionIdRef)
+
+		// /cc new: the visible session is still in the source repo, so the lead
+		// is acquired through the HIDDEN runner (its only job: flush a thread
+		// file to switch to). No domain tools reach the visible pi.
+		const missionId = await orch.createMission({ repoPath: "/test-repo" })
+		missionIdRef.current = missionId
+		expect(hidden.sessions.get(`${missionId}:mission_lead:_`)).toBeDefined()
+		expect(pi.registeredTools).toEqual([])
+		expect(pi.sent).toEqual([])
+
+		// The extension switched the UI into the integration-worktree thread.
+		attached = true
+		await orch.bindVisibleLead(missionId)
+
+		// The lead is now bound to the visible session: its domain tools are
+		// registered + activated on the visible pi and the active session
+		// handle points at the visible session.
+		const names = pi.registeredTools.map((t) => t.name)
+		expect(names).toContain("define_mission")
+		expect(names).toContain("write_plan")
+		expect(names).toContain("review_work_item")
+		expect(pi.activeTools).toContain("define_mission")
+		expect(pi.activeTools).toContain("write_plan")
+		expect(orch.getActiveSession(missionId, "mission_lead")?.sessionId).toBe(
+			"visible-lead-session",
+		)
+		// The framing prompt went to the hidden flush session, not the visible pi.
+		expect(pi.sent).toEqual([])
+	})
+
+	test("no-ops when the mission is not pending (driven missions bind on their own)", async () => {
+		const missionIdRef = { current: "visible1" }
+		const { orch, pi, hidden, store } = makeVisibleOrch(
+			() => true,
+			missionIdRef,
+		)
+		await store.writeMission({
+			id: "visible1",
+			repoPath: "/test-repo",
+			title: "visible1",
+			description: "visible1",
+			acceptanceCriteria: [],
+			status: "in_progress",
+		})
+		await orch.registerMission("visible1")
+
+		await orch.bindVisibleLead("visible1")
+
+		expect(pi.registeredTools).toEqual([])
+		expect(hidden.sessions.size).toBe(0)
+	})
+
+	test("falls back to the hidden runner when the visible session is not attached", async () => {
+		const missionIdRef = { current: "visible1" }
+		const { orch, pi, hidden, store } = makeVisibleOrch(
+			() => false,
+			missionIdRef,
+		)
+		await store.writeMission({
+			id: "visible1",
+			repoPath: "/test-repo",
+			title: "visible1",
+			description: "visible1",
+			acceptanceCriteria: [],
+			status: "pending",
+		})
+		await orch.registerMission("visible1")
+
+		await orch.bindVisibleLead("visible1")
+
+		expect(pi.registeredTools).toEqual([])
+		expect(hidden.sessions.get("visible1:mission_lead:_")).toBeDefined()
+	})
+})
+
 describe("Orchestrator — launchMission", () => {
 	/** Poll the store until `cond` holds (the drive is fire-and-forget). */
 	async function waitFor(

@@ -1256,6 +1256,31 @@ export class Orchestrator {
 		)
 	}
 
+	/**
+	 * Re-bind the Mission Lead to the CURRENT visible session, so its domain
+	 * tools (define_mission, write_plan, ...) become available there.
+	 *
+	 * /cc new acquires the lead once while the visible session is still in the
+	 * source repo — the visible-lead runner cannot match, so it falls back to a
+	 * hidden SDK session whose only job is flushing a thread file to attach to.
+	 * Calling this AFTER the host switched into that thread re-acquires the
+	 * lead through the visible path: the runner registers + activates the
+	 * lead's domain tools on the visible pi, letting the human and the lead
+	 * define the mission / write the plan interactively.
+	 *
+	 * Gated on `pending`: an in_progress mission is driven (its lead already
+	 * binds when the human is attached) and re-acquiring mid-drive would swap
+	 * the drive's session handle out from under it. If the visible session is
+	 * not actually attached to the lead, the runner falls back to the hidden
+	 * path (resuming the same thread) — harmless, so no error is raised.
+	 */
+	async bindVisibleLead(missionId: string): Promise<void> {
+		const mission = await this.store.readMission(missionId)
+		if (mission?.status !== "pending") return
+		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
+		await this.acquireSession(lead)
+	}
+
 	/** The accept-merge callback wired to the WorktreeProvider (lead-only). */
 	private buildAcceptAndMerge(missionId: string): AcceptAndMerge {
 		return async (workItemId: number) => {

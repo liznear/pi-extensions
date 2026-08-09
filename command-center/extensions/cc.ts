@@ -179,7 +179,7 @@ async function attachToRole(
 	missionId: string,
 	roleName: RoleName,
 	workItemId?: number,
-): Promise<void> {
+): Promise<boolean> {
 	const target = await resolveAttachTarget(
 		orch,
 		missionId,
@@ -191,9 +191,10 @@ async function attachToRole(
 			`No active session found for mission ${missionId} role ${roleName}`,
 			"error",
 		)
-		return
+		return false
 	}
 	await attachToPath(ctx, target.path, missionId, roleName)
+	return true
 }
 
 /**
@@ -578,7 +579,20 @@ export default function (pi: ExtensionAPI) {
 				// lazily (only once its opening turn flushes entries), so
 				// resolveAttachTarget waits for it rather than attaching to an
 				// in-memory-only session.
-				await attachToRole(ctx, orch, missionId, "mission_lead")
+				const attached = await attachToRole(
+					ctx,
+					orch,
+					missionId,
+					"mission_lead",
+				)
+				// createMission acquired the lead while the visible session was still
+				// in the source repo, so its domain tools live only in the hidden
+				// session runtime. Now that the UI is in the integration-worktree
+				// thread, re-bind the lead to the visible session: the runner
+				// registers + activates define_mission / write_plan / ... on the
+				// visible pi, so the human and the lead can define the mission and
+				// write the plan together.
+				if (attached) await orch.bindVisibleLead(missionId)
 			} else if (cmd === "launch") {
 				// /cc launch — start the mission whose lead session is visible
 				// (pending → in_progress, then drive its plan in the background).
@@ -658,7 +672,22 @@ export default function (pi: ExtensionAPI) {
 					return
 				}
 
-				await attachToRole(ctx, orch, missionId, roleName, workItemId)
+				const attached = await attachToRole(
+					ctx,
+					orch,
+					missionId,
+					roleName,
+					workItemId,
+				)
+				// Attaching to a pending mission's lead outside a drive means the
+				// lead's domain tools were never registered on the visible pi
+				// (they live in the hidden session runtime). Re-bind so the human
+				// can continue defining/planning interactively. Owners stay on
+				// hidden sessions; in_progress missions are driven and already
+				// bind on attach — bindVisibleLead no-ops for those.
+				if (attached && roleName === "mission_lead") {
+					await orch.bindVisibleLead(missionId)
+				}
 			} else if (cmd === "resume") {
 				// /cc resume — re-drive the mission whose lead session is visible.
 				// Explicit takeover: force-acquires the driver lock; a displaced
