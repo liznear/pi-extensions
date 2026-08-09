@@ -33,6 +33,7 @@ export const MAX_WIDGET_LINES = 20
 /** Cap a single title's length so a pathological title can't balloon the widget. */
 export const MAX_TITLE_CHARS = 120
 
+export const HEADER_LEFT_PADDING = " "
 export const ROW_LEFT_PADDING = "  "
 
 /** Live per-role activity for a work item, driven by forwarded session events. */
@@ -202,15 +203,16 @@ export function normalMissionLine(
 	fg: (color: ThemeColor, text: string) => string = IDENTITY_FG,
 	isLast = true,
 ): string {
-	const state = sessionAttached
-		? fg("accent", "Running...")
-		: fg(
-				STATUS_COLOR[mission.status],
-				`Paused[${STATUS_LABEL[mission.status]}]`,
-			)
+  const state = sessionAttached
+    ? fg("accent", "Running...")
+    : fg(
+      STATUS_COLOR[mission.status],
+      `Paused[${STATUS_LABEL[mission.status]}]`,
+    );
 	const inProgress = fg("accent", String(mission.itemCounts.in_progress))
 	const completed = fg("success", String(mission.itemCounts.accepted))
-	return `${ROW_LEFT_PADDING}${connector(isLast)} ${fitTitle(mission.title)} (${mission.id}) ${state} (${inProgress} + ${completed} / ${totalItems(mission.itemCounts)})`
+	const conn = fg("dim", connector(isLast))
+	return `${ROW_LEFT_PADDING}${conn} ${fitTitle(mission.title)} (${mission.id}) ${state} (${inProgress} + ${completed} / ${totalItems(mission.itemCounts)})`
 }
 
 interface StatePresentation {
@@ -288,7 +290,8 @@ export function missionLeadItemLine(
 	spinnerFrame = 0,
 ): string {
 	const state = currentState(item, spinnerFrame)
-	return `${ROW_LEFT_PADDING}${connector(isLast)} ${fg("muted", `#${item.id}`)} ${fitTitle(item.title)}: ${fg(state.color, state.label)}`
+	const conn = fg("dim", connector(isLast))
+	return `${ROW_LEFT_PADDING}${conn} ${fg("muted", `#${item.id}`)} ${fitTitle(item.title)}: ${fg(state.color, state.label)}`
 }
 
 /** Render the mode-specific header. */
@@ -301,7 +304,7 @@ export function commandCenterHeader(
 	if (mode.kind === "mission-lead") {
 		const { mission } = mode.row
 		return truncateToWidth(
-			`${fg("accent", bold(MISSIONS_WIDGET_TITLE))} - Mission Lead @ ${fitTitle(mission.title)} (${mission.id})`,
+			`${HEADER_LEFT_PADDING}${fg("accent", bold(MISSIONS_WIDGET_TITLE))} - Mission Lead @ ${fitTitle(mission.title)} (${mission.id})`,
 			width,
 		)
 	}
@@ -383,7 +386,7 @@ export function missionsHeader(
 	).length
 	const done = rows.filter((r) => r.mission.status === "completed").length
 	const summary = `${active} active \u00b7 ${done}/${rows.length} done`
-	const title = ` ${fg("accent", bold(MISSIONS_WIDGET_TITLE))}  ${fg(
+	const title = `${HEADER_LEFT_PADDING}${fg("accent", bold(MISSIONS_WIDGET_TITLE))}  ${fg(
 		"dim",
 		summary,
 	)}`

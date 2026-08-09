@@ -122,7 +122,7 @@ describe("mode-specific widget rendering", () => {
 			sessionAttached: true,
 		})
 		expect(normalMissionLine(row, fg)).toBe(
-			"  ┗━ Ship feature (m1) <accent>Running...</accent> (<accent>2</accent> + <success>3</success> / 6)",
+			"  <dim>┗━</dim> Ship feature (m1) <accent>Running...</accent> (<accent>2</accent> + <success>3</success> / 6)",
 		)
 	})
 
@@ -144,7 +144,7 @@ describe("mode-specific widget rendering", () => {
 			activity: { phase: "tool" as const, tool: "write" },
 		}
 		expect(missionLeadItemLine(item, fg)).toBe(
-			"  ┗━ <muted>#7</muted> Implement widget: <warning>Calling write -</warning>",
+			"  <dim>┗━</dim> <muted>#7</muted> Implement widget: <warning>Calling write -</warning>",
 		)
 	})
 
@@ -152,7 +152,7 @@ describe("mode-specific widget rendering", () => {
 		const row = wrow({ id: "m3", mission: { title: "Ship feature" } })
 		expect(
 			commandCenterHeader({ kind: "mission-lead", row }, identity, noBold, 80),
-		).toBe("Command Center - Mission Lead @ Ship feature (m3)")
+		).toBe(" Command Center - Mission Lead @ Ship feature (m3)")
 	})
 
 	test("normal mode does not expand work items", () => {
@@ -201,7 +201,7 @@ describe("mode-specific widget rendering", () => {
 			activity: { phase: "thinking" as const },
 		}
 		expect(missionLeadItemLine(item, fg, true, 2)).toBe(
-			"  ┗━ <muted>#3</muted> Implement widget: <accent>Thinking |</accent>",
+			"  <dim>┗━</dim> <muted>#3</muted> Implement widget: <accent>Thinking |</accent>",
 		)
 	})
 
