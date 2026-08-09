@@ -501,6 +501,22 @@ export default function (pi: ExtensionAPI) {
 		queueAttachmentGate(ctx)
 		await refreshMissionsWidget()
 
+		// Bind the Mission Lead to the visible session when the UI lands in a
+		// PENDING mission's integration worktree. This is the reliable place for
+		// it: pi re-loads the extension when a session switch changes cwd (its
+		// extension module cache is cwd-keyed), so /cc new's own
+		// bindVisibleLead call — made on the PREVIOUS module instance — sees a
+		// widgetCtx reset by the old session's shutdown and a stale pi, and can
+		// never register the lead's domain tools on the new session. Here, on
+		// the NEW instance, widgetCtx points at the just-switched session and
+		// pi.registerTool targets the live extension runtime. Runs for any
+		// entry into a pending lead worktree: /cc new, /cc attach, and a
+		// restart while already attached.
+		const visibleRole = await currentVisibleRole(ctx)
+		if (visibleRole?.roleName === "mission_lead") {
+			await orch.bindVisibleLead(visibleRole.missionId)
+		}
+
 		// /cc argument completions via a wrapper around the built-in provider.
 		// The built-in slash-command provider replaces the WHOLE argument text
 		// with the completed value (Tab on `/cc attach ` yields `/cc some-id`),
@@ -578,21 +594,11 @@ export default function (pi: ExtensionAPI) {
 				// Switch to the lead's session. The lead's thread file is written
 				// lazily (only once its opening turn flushes entries), so
 				// resolveAttachTarget waits for it rather than attaching to an
-				// in-memory-only session.
-				const attached = await attachToRole(
-					ctx,
-					orch,
-					missionId,
-					"mission_lead",
-				)
-				// createMission acquired the lead while the visible session was still
-				// in the source repo, so its domain tools live only in the hidden
-				// session runtime. Now that the UI is in the integration-worktree
-				// thread, re-bind the lead to the visible session: the runner
-				// registers + activates define_mission / write_plan / ... on the
-				// visible pi, so the human and the lead can define the mission and
-				// write the plan together.
-				if (attached) await orch.bindVisibleLead(missionId)
+				// in-memory-only session. The lead's domain tools are bound by the
+				// new session's session_start (see the auto-bind there): the switch
+				// reloads the extension for the worktree cwd, and only that fresh
+				// module instance can register tools on the live visible session.
+				await attachToRole(ctx, orch, missionId, "mission_lead")
 			} else if (cmd === "launch") {
 				// /cc launch — start the mission whose lead session is visible
 				// (pending → in_progress, then drive its plan in the background).
@@ -672,22 +678,11 @@ export default function (pi: ExtensionAPI) {
 					return
 				}
 
-				const attached = await attachToRole(
-					ctx,
-					orch,
-					missionId,
-					roleName,
-					workItemId,
-				)
-				// Attaching to a pending mission's lead outside a drive means the
-				// lead's domain tools were never registered on the visible pi
-				// (they live in the hidden session runtime). Re-bind so the human
-				// can continue defining/planning interactively. Owners stay on
-				// hidden sessions; in_progress missions are driven and already
-				// bind on attach — bindVisibleLead no-ops for those.
-				if (attached && roleName === "mission_lead") {
-					await orch.bindVisibleLead(missionId)
-				}
+				// The pending lead's domain tools are bound by the new session's
+				// session_start (see the auto-bind there). Owners stay on hidden
+				// sessions; in_progress missions are driven and already bind on
+				// attach — bindVisibleLead no-ops for those anyway.
+				await attachToRole(ctx, orch, missionId, roleName, workItemId)
 			} else if (cmd === "resume") {
 				// /cc resume — re-drive the mission whose lead session is visible.
 				// Explicit takeover: force-acquires the driver lock; a displaced

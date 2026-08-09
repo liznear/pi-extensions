@@ -1263,10 +1263,17 @@ export class Orchestrator {
 	 * /cc new acquires the lead once while the visible session is still in the
 	 * source repo — the visible-lead runner cannot match, so it falls back to a
 	 * hidden SDK session whose only job is flushing a thread file to attach to.
-	 * Calling this AFTER the host switched into that thread re-acquires the
-	 * lead through the visible path: the runner registers + activates the
-	 * lead's domain tools on the visible pi, letting the human and the lead
-	 * define the mission / write the plan interactively.
+	 * Switching the UI into that thread re-loads the extension (pi's extension
+	 * module cache is cwd-keyed), so binding must run on the NEW module
+	 * instance's session_start, where the visible-session context and pi are
+	 * live. This method re-acquires the lead through the visible path: the
+	 * runner registers + activates the lead's domain tools on the visible pi,
+	 * letting the human and the lead define the mission / write the plan
+	 * interactively.
+	 *
+	 * Self-sufficient on registration: a fresh module instance (or a process
+	 * restart) has no missions in its repo map, so the mission is registered
+	 * from the Store first (idempotent).
 	 *
 	 * Gated on `pending`: an in_progress mission is driven (its lead already
 	 * binds when the human is attached) and re-acquiring mid-drive would swap
@@ -1277,6 +1284,7 @@ export class Orchestrator {
 	async bindVisibleLead(missionId: string): Promise<void> {
 		const mission = await this.store.readMission(missionId)
 		if (mission?.status !== "pending") return
+		await this.registerMission(missionId)
 		const lead: RoleIdentity = { missionId, roleName: "mission_lead" }
 		await this.acquireSession(lead)
 	}

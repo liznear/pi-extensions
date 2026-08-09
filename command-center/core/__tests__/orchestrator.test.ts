@@ -660,6 +660,39 @@ describe("Orchestrator — bindVisibleLead (interactive definition after /cc new
 		expect(hidden.sessions.size).toBe(0)
 	})
 
+	test("binds from a fresh module instance without prior registration (session_start auto-bind path)", async () => {
+		// After /cc new, pi re-loads the extension for the worktree cwd, so the
+		// bind runs on a FRESH Orchestrator that has never seen the mission
+		// (empty repo map). bindVisibleLead must register the mission from the
+		// Store itself — this is the exact call the extension's session_start
+		// handler makes when the UI lands in a pending lead worktree.
+		const missionIdRef = { current: "visible2" }
+		const { orch, pi, hidden, store } = makeVisibleOrch(
+			() => true,
+			missionIdRef,
+		)
+		await store.writeMission({
+			id: "visible2",
+			repoPath: "/test-repo",
+			title: "visible2",
+			description: "visible2",
+			acceptanceCriteria: [],
+			status: "pending",
+		})
+		// NOTE: deliberately NO orch.registerMission("visible2") first.
+
+		await orch.bindVisibleLead("visible2")
+
+		const names = pi.registeredTools.map((t) => t.name)
+		expect(names).toContain("define_mission")
+		expect(names).toContain("write_plan")
+		expect(pi.activeTools).toContain("define_mission")
+		expect(orch.getActiveSession("visible2", "mission_lead")?.sessionId).toBe(
+			"visible-lead-session",
+		)
+		expect(hidden.sessions.size).toBe(0)
+	})
+
 	test("falls back to the hidden runner when the visible session is not attached", async () => {
 		const missionIdRef = { current: "visible1" }
 		const { orch, pi, hidden, store } = makeVisibleOrch(
