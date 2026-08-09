@@ -29,3 +29,9 @@ bundle:
 - Install: `command-center` is registered in the root `package.json`
   `pi.extensions` manifest, so it is installed as part of the pi-extensions
   bundle (`pi install git:github.com/<owner>/pi-extensions`).
+
+## Design notes
+
+- [Visible-session plumbing contracts](docs/visible-session-plumbing-contracts.md)
+  pins the adapter contracts for driving/observing a visible Pi session from
+  Command Center.
