@@ -40,6 +40,9 @@ let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let lastWidgetSkeleton: string | undefined
 /** Live per-item activity, keyed by `<missionId>:<workItemId>`. */
 const liveActivity = new Map<string, ActivityState>()
+/** Missions parked because the visible session detached from their lead. */
+const attachmentParkedMissions = new Set<string>()
+let attachmentGateQueue: Promise<void> = Promise.resolve()
 
 function activityKey(missionId: string, workItemId: number): string {
 	return `${missionId}:${workItemId}`
@@ -164,28 +167,24 @@ async function attachToRole(
 }
 
 /**
- * The mission the current session is attached to — the gating check for the
- * no-argument /cc launch and /cc resume: the cwd must be inside the mission's
- * worktrees dir (`<repo>/.command-center/worktrees/<id>/…` — the lead's
- * integration session or an owner's session). A session merely opened in the
- * repo root is NOT attached. On a miss, notifies the user and returns
- * undefined.
+ * The mission whose lead is attached to the current session — the gating check
+ * for no-argument /cc launch and /cc resume. The cwd must be inside the
+ * mission's integration worktree. Source-repo sessions and owner worktrees are
+ * deliberately not drive-attached.
  */
-async function requireAttachedMission(
+async function requireAttachedLeadMission(
 	ctx: ExtensionCommandContext,
 	orch: Orchestrator,
 ): Promise<string | undefined> {
 	const missions = await orch.store.listMissions()
-	const missionId = missions.find((m) =>
-		isInsideMissionWorktrees(m, ctx.cwd),
-	)?.id
-	if (!missionId) {
+	const mission = missions.find((m) => isLeadAttachedToMission(m, ctx.cwd))
+	if (!mission) {
 		await ctx.ui.notify(
-			"You are not attached to a mission. Run /cc attach <missionId> or /cc new first.",
+			"You are not attached to a mission lead session. Run /cc attach <missionId> (without a workItemId) or switch to the mission's integration worktree.",
 			"error",
 		)
 	}
-	return missionId
+	return mission?.id
 }
 
 function normalizedPath(p: string): string {
@@ -225,6 +224,13 @@ function visibleRoleForMission(
 	return undefined
 }
 
+function isLeadAttachedToMission(
+	mission: Pick<MissionSummary, "id" | "repoPath">,
+	cwd: string,
+): boolean {
+	return visibleRoleForMission(mission, cwd)?.roleName === "mission_lead"
+}
+
 async function currentVisibleRole(
 	ctx: ExtensionContext,
 ): Promise<RoleIdentity | undefined> {
@@ -235,6 +241,59 @@ async function currentVisibleRole(
 		if (role) return role
 	}
 	return undefined
+}
+
+function queueAttachmentGate(ctx: ExtensionContext | undefined): void {
+	attachmentGateQueue = attachmentGateQueue
+		.then(() => evaluateDriveAttachment(ctx))
+		.catch((error) => {
+			console.error("Command Center attachment gate failed:", error)
+		})
+}
+
+async function evaluateDriveAttachment(
+	ctx: ExtensionContext | undefined,
+): Promise<void> {
+	if (!orch) return
+	const missions = await orch.store.listMissions()
+	const attachedLead = ctx
+		? missions.find((mission) => isLeadAttachedToMission(mission, ctx.cwd))
+		: undefined
+
+	for (const mission of missions) {
+		const lock = await orch.driverLock.status(mission.id)
+		if (!lock.held || !lock.byMe) continue
+		if (attachedLead?.id === mission.id) continue
+		orch.parkMissionDrive(mission.id)
+		attachmentParkedMissions.add(mission.id)
+	}
+
+	if (!attachedLead) return
+	const driveWasParked =
+		attachmentParkedMissions.has(attachedLead.id) ||
+		orch.isMissionDriveParked(attachedLead.id)
+	if (!driveWasParked) return
+	const mission = await orch.store.readMission(attachedLead.id)
+	if (mission?.status !== "in_progress") {
+		attachmentParkedMissions.delete(attachedLead.id)
+		return
+	}
+	const lock = await orch.driverLock.status(attachedLead.id)
+	if (lock.held) {
+		if (lock.byMe) {
+			setTimeout(() => queueAttachmentGate(widgetCtx), 250)
+		}
+		return
+	}
+	attachmentParkedMissions.delete(attachedLead.id)
+	void orch.resumeMission(attachedLead.id, { force: false }).catch((error) => {
+		const err = error instanceof Error ? error : new Error(String(error))
+		attachmentParkedMissions.add(attachedLead.id)
+		void widgetCtx?.ui.notify(
+			`Mission ${attachedLead.id} could not resume after re-attach: ${err.message}`,
+			"error",
+		)
+	})
 }
 
 /**
@@ -324,6 +383,12 @@ export default function (pi: ExtensionAPI) {
 				// Cross-process coordination: exactly one process may drive a
 				// mission at a time. Explicit /cc commands force-takeover.
 				driverLock: new FileDriverLock(),
+				canDriveMission: async (missionId) => {
+					const ctx = widgetCtx
+					if (!ctx) return false
+					const mission = await store.readMission(missionId)
+					return mission ? isLeadAttachedToMission(mission, ctx.cwd) : false
+				},
 			})
 
 			orch.subscribeAll((e) => {
@@ -375,6 +440,7 @@ export default function (pi: ExtensionAPI) {
 				} else if (e.type === "work-item-status-changed") {
 					liveActivity.delete(activityKey(e.missionId, e.workItemId))
 				} else if (e.type === "mission-deleted") {
+					attachmentParkedMissions.delete(e.missionId)
 					for (const key of [...liveActivity.keys()]) {
 						if (key.startsWith(`${e.missionId}:`)) liveActivity.delete(key)
 					}
@@ -402,6 +468,7 @@ export default function (pi: ExtensionAPI) {
 		// skeleton so the widget is always (re)built for the new session.
 		widgetCtx = ctx
 		lastWidgetSkeleton = undefined
+		queueAttachmentGate(ctx)
 		await refreshMissionsWidget()
 
 		// /cc argument completions via a wrapper around the built-in provider.
@@ -435,7 +502,12 @@ export default function (pi: ExtensionAPI) {
 		}))
 	})
 
+	pi.on("session_before_switch", () => {
+		queueAttachmentGate(undefined)
+	})
+
 	pi.on("session_shutdown", () => {
+		queueAttachmentGate(undefined)
 		// The runner clears extension widgets on teardown; dropping the context
 		// stops background-drive events from touching a torn-down UI. The next
 		// session_start re-establishes it.
@@ -478,10 +550,10 @@ export default function (pi: ExtensionAPI) {
 				// in-memory-only session.
 				await attachToRole(ctx, orch, missionId, "mission_lead")
 			} else if (cmd === "launch") {
-				// /cc launch — start the mission the current session is attached
-				// to (pending → in_progress, then drive its plan in the
-				// background). Only allowed from inside the mission's worktrees.
-				const missionId = await requireAttachedMission(ctx, orch)
+				// /cc launch — start the mission whose lead session is visible
+				// (pending → in_progress, then drive its plan in the background).
+				// Drive ownership is gated on staying attached to the lead.
+				const missionId = await requireAttachedLeadMission(ctx, orch)
 				if (!missionId) return
 				try {
 					await orch.launchMission(missionId, {
@@ -558,12 +630,12 @@ export default function (pi: ExtensionAPI) {
 
 				await attachToRole(ctx, orch, missionId, roleName, workItemId)
 			} else if (cmd === "resume") {
-				// /cc resume — re-drive the mission the current session is
-				// attached to. Explicit takeover: force-acquires the driver lock;
-				// a displaced driver in another process stops at its next loop
-				// iteration. Only allowed from inside the mission's worktrees,
-				// and only for an already-launched (in_progress) mission.
-				const missionId = await requireAttachedMission(ctx, orch)
+				// /cc resume — re-drive the mission whose lead session is visible.
+				// Explicit takeover: force-acquires the driver lock; a displaced
+				// driver in another process stops at its next loop iteration. Only
+				// allowed from the mission's integration worktree, and only for an
+				// already-launched (in_progress) mission.
+				const missionId = await requireAttachedLeadMission(ctx, orch)
 				if (!missionId) return
 				const mission = await orch.store.readMission(missionId)
 				if (mission?.status !== "in_progress") {
