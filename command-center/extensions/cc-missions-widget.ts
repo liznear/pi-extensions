@@ -32,6 +32,8 @@ export const MAX_WIDGET_LINES = 20
 /** Cap a single title's length so a pathological title can't balloon the widget. */
 export const MAX_TITLE_CHARS = 120
 
+export const ROW_LEFT_PADDING = "  "
+
 /** Live per-role activity for a work item, driven by forwarded session events. */
 export interface ActivityState {
 	phase: "thinking" | "writing" | "tool" | "idle"
@@ -184,7 +186,7 @@ export function normalMissionLine(
 		: fg("dim", `Paused[${STATUS_LABEL[mission.status]}]`)
 	const inProgress = fg("accent", String(mission.itemCounts.in_progress))
 	const completed = fg("success", String(mission.itemCounts.accepted))
-	return `┗━ ${fitTitle(mission.title)}(${mission.id}) ${state} (${inProgress} + ${completed} / ${totalItems(mission.itemCounts)})`
+	return `${ROW_LEFT_PADDING}┗━ ${fitTitle(mission.title)} (${mission.id}) ${state} (${inProgress} + ${completed} / ${totalItems(mission.itemCounts)})`
 }
 
 function currentAction(activity: ActivityState | undefined): string {
@@ -203,7 +205,7 @@ export function missionLeadItemLine(
 		WORK_ITEM_STATUS_COLOR[item.status],
 		`[${WORK_ITEM_STATUS_LABEL[item.status]}]`,
 	)
-	return `┗━ ${fitTitle(item.title)}${status}: ${fg("dim", currentAction(item.activity))}`
+	return `${ROW_LEFT_PADDING}┗━ ${fitTitle(item.title)}${status}: ${fg("dim", currentAction(item.activity))}`
 }
 
 /** Render the mode-specific header. */
@@ -216,7 +218,7 @@ export function commandCenterHeader(
 	if (mode.kind === "mission-lead") {
 		const { mission } = mode.row
 		return truncateToWidth(
-			`${fg("accent", bold(MISSIONS_WIDGET_TITLE))} - Mission Lead @ ${fitTitle(mission.title)}(${mission.id})`,
+			`${fg("accent", bold(MISSIONS_WIDGET_TITLE))} - Mission Lead @ ${fitTitle(mission.title)} (${mission.id})`,
 			width,
 		)
 	}

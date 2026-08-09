@@ -79,7 +79,7 @@ describe("define_mission tool", () => {
 		await store.writeMission({
 			id: "7k3a9fqa",
 			repoPath: "/test-repo",
-			title: "(New Mission)",
+			title: "New Mission",
 			description: "",
 			acceptanceCriteria: [],
 			status: "pending",

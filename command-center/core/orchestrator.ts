@@ -484,7 +484,7 @@ export class Orchestrator {
 		await this.store.writeMission({
 			id: missionId,
 			repoPath,
-			title: "(New Mission)",
+			title: "New Mission",
 			description,
 			acceptanceCriteria: [],
 			// Stubs are `pending` until explicitly launched (driveDefinedMission /
