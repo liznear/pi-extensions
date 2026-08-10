@@ -21,7 +21,8 @@
 			"command-run/index.ts",
 			"otty-integration/index.ts",
 			"command-center/index.ts",
-			"command-center/extensions/cc-highlight.ts"
+			"command-center/extensions/cc-highlight.ts",
+			"tweets/index.ts"
 		]
 	},
 	"scripts": {
@@ -39,5 +40,8 @@
 		"@types/bun": "^1.3.14",
 		"typebox": "^1.3.11",
 		"typescript": "^7.0.2"
+	},
+	"dependencies": {
+		"express": "^5.2.1"
 	}
 }

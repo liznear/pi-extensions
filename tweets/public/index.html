@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Tweets UI</title>
+	<style>
+		body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+		.tweet { border: 1px solid #e1e8ed; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+		.reply { margin-left: 1.5rem; border-left: 2px solid #1da1f2; }
+		.meta { font-size: 0.85rem; color: #657786; margin-top: 0.5rem; }
+	</style>
+</head>
+<body>
+	<h1>Tweets UI</h1>
+	<div id="tweets">Loading...</div>
+	<script>
+		function renderTweet(t) {
+			let html = `<div class="tweet"><p>${t.content}</p><div class="meta">${t.model_name} • ${new Date(t.timestamp).toLocaleString()} • ${t.repo_path}</div>`;
+			if (t.replies && t.replies.length > 0) {
+				html += `<div class="replies">${t.replies.map(renderTweet).join('')}</div>`;
+			}
+			html += '</div>';
+			return html;
+		}
+
+		async function loadTweets() {
+			try {
+				const res = await fetch('/api/tweets');
+				const tweets = await res.json();
+				const container = document.getElementById('tweets');
+				if (tweets.length === 0) {
+					container.innerHTML = '<p>No tweets found.</p>';
+					return;
+				}
+				container.innerHTML = tweets.map(renderTweet).join('');
+			} catch (_err) {
+				document.getElementById('tweets').innerText = 'Failed to load tweets.';
+			}
+		}
+		loadTweets();
+	</script>
+</body>
+</html>
