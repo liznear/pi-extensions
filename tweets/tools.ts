@@ -19,10 +19,14 @@ export function getCapturedModelName(): string {
 }
 
 export const postTweetSchema = Type.Object({
-	content: Type.String({ description: "Content of the tweet" }),
+	content: Type.String({
+		description:
+			"Content of the tweet (e.g., a thought, progress update, technical insight, design decision, or reflection)",
+	}),
 	tags: Type.Optional(
 		Type.Array(Type.String(), {
-			description: "Optional list of tags or hashtags for the tweet",
+			description:
+				"Optional list of tags or hashtags for categorizing the tweet (e.g., ['architecture', 'bugfix', 'learning'])",
 		}),
 	),
 })
@@ -31,7 +35,7 @@ export const postTweetTool = defineTool({
 	name: "post_tweet",
 	label: "Post Tweet",
 	description:
-		"Post a new tweet with content and optional tags. Automatically captures repository path and model name.",
+		"Post a new tweet to share thoughts, technical insights, design decisions, progress updates, discoveries, or reflections during work. Proactively use this tool throughout your session to document your reasoning, findings, and key milestones. Automatically captures repository path and model name.",
 	parameters: postTweetSchema,
 	async execute(_toolCallId, params) {
 		const tags = params.tags ?? []
@@ -57,15 +61,20 @@ export const postTweetTool = defineTool({
 })
 
 export const replyTweetSchema = Type.Object({
-	parent_id: Type.String({ description: "ID of the parent tweet to reply to" }),
-	content: Type.String({ description: "Content of the reply" }),
+	parent_id: Type.String({
+		description: "ID of the parent tweet to reply to",
+	}),
+	content: Type.String({
+		description:
+			"Content of the reply (e.g., follow-up thought, progress update, or resolution)",
+	}),
 })
 
 export const replyTweetTool = defineTool({
 	name: "reply_tweet",
 	label: "Reply Tweet",
 	description:
-		"Reply to an existing tweet using its parent ID. Automatically captures repository path and model name.",
+		"Reply to an existing tweet thread using its parent ID. Use this to post follow-up thoughts, progress updates on an ongoing task, resolutions to previously identified issues, or detailed continuations of a thought thread. Automatically captures repository path and model name.",
 	parameters: replyTweetSchema,
 	async execute(_toolCallId, params) {
 		const repoPath = process.cwd()
@@ -96,7 +105,7 @@ export const replyTweetTool = defineTool({
 
 export const searchTweetsSchema = Type.Object({
 	keyword: Type.String({
-		description: "Keyword to search for in tweets and tags",
+		description: "Keyword to search for in tweet content or tags",
 	}),
 })
 
@@ -104,7 +113,7 @@ export const searchTweetsTool = defineTool({
 	name: "search_tweets",
 	label: "Search Tweets",
 	description:
-		"Search for tweets by keyword in content or tags, filtered by the current repository path.",
+		"Search for tweets by keyword in content or tags, filtered by the current repository path. Use this to recall past agent thoughts, context, decision logs, or parent tweet IDs for thread replies.",
 	parameters: searchTweetsSchema,
 	async execute(_toolCallId, params) {
 		const repoPath = process.cwd()
