@@ -7,8 +7,8 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { FileDriverLock } from "../core/driver-lock"
+import { createAutoSessionRunner } from "../core/herdr-session"
 import { Orchestrator } from "../core/orchestrator"
-import { PiVisibleLeadSessionRunner } from "../core/session"
 import { FileStore } from "../core/store-file"
 import type { MissionSummary, RoleIdentity, RoleName } from "../core/types"
 import { WorktreeProvisioner, worktreeRoot } from "../core/worktree/provisioner"
@@ -551,7 +551,7 @@ export default function (pi: ExtensionAPI) {
 			const store = new FileStore()
 			orch = new Orchestrator({
 				sessionRunner: (bus, store) =>
-					new PiVisibleLeadSessionRunner({
+					createAutoSessionRunner({
 						bus,
 						store,
 						pi,
