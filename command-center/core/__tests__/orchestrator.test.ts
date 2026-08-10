@@ -533,7 +533,6 @@ describe("Orchestrator — defineMission", () => {
 
 		expect(missionId).toMatch(/^[0-9a-z]{8}$/)
 		expect(wt.calls).toContain(`createIntegration:${missionId}`)
-		expect(wt.calls).toContain("ensureGitignored")
 		expect(lastEvent(events, "mission-defined")).toBeDefined()
 		expect(lastEvent(events, "plan-written")).toBeDefined()
 	})

@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process"
-import { readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -93,7 +92,6 @@ export type ReviewReadiness = { ready: true } | { ready: false; reason: string }
  * impl; tests substitute a FakeWorktreeProvider (no git).
  */
 export interface WorktreeProvider {
-	ensureGitignored(repoPath: string): Promise<void>
 	createIntegrationWorktree(
 		repoPath: string,
 		missionId: string,
@@ -132,33 +130,6 @@ export class WorktreeProvisioner implements WorktreeProvider {
 	// instance serves worktrees across many repos.
 
 	// --- repo-wide setup -----------------------------------------------------
-
-	/**
-	 * Ensure `.command-center/` is gitignored (idempotent). Asks git whether
-	 * the path is ALREADY ignored (via `git check-ignore`, which consults every
-	 * ignore source — the repo's .gitignore, .git/info/exclude, parent dirs, and
-	 * the global core.excludesFile); if so, this is a no-op. Otherwise it appends
-	 * `.command-center/` to the repo's .gitignore.
-	 */
-	async ensureGitignored(repoPath: string): Promise<void> {
-		const dir = `${repoPath}/.command-center`
-		// `git check-ignore -q <path>` exits 0 if ignored, 1 if not.
-		const check = await this.git(["check-ignore", "-q", dir], repoPath)
-		if (check.code === 0) return // already ignored by some source
-
-		const gitignore = `${repoPath}/.gitignore`
-		const desiredLine = ".command-center/"
-		const exists = await fileExists(gitignore)
-		const current = exists ? await readFile(gitignore, "utf8") : ""
-		if (current.split("\n").includes(desiredLine)) return
-		const prefix = current.length > 0 && !current.endsWith("\n") ? "\n" : ""
-		const suffix = current.endsWith("\n") ? "" : "\n"
-		await writeFile(
-			gitignore,
-			`${current}${prefix}${desiredLine}${suffix}`,
-			"utf8",
-		)
-	}
 
 	/** Run a git command in `cwd`. Does NOT throw on non-zero exit (use for
 	 *  predicate commands like `check-ignore`, `branch --list`, `merge`). */
@@ -458,10 +429,6 @@ export class FakeWorktreeProvider implements WorktreeProvider {
 	reviewReadinessResults: ReviewReadiness[] = []
 	/** Recorded calls, for assertions. */
 	calls: string[] = []
-
-	async ensureGitignored(_repoPath: string): Promise<void> {
-		this.calls.push("ensureGitignored")
-	}
 
 	async createIntegrationWorktree(
 		_repoPath: string,

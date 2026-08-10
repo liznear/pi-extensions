@@ -61,46 +61,6 @@ async function mkdtemp(prefix: string): Promise<string> {
 	return dir
 }
 
-describe("WorktreeProvisioner — gitignore", () => {
-	// The user may have a global core.excludesFile that already ignores
-	// .command-center/, in which case ensureGitignored correctly no-ops (that's
-	// the point of the git check-ignore guard). To test the repo-local append
-	// path deterministically, neutralize the global excludesFile per repo.
-	beforeEach(async () => {
-		await $`git config core.excludesFile ""`.cwd(repo).quiet().nothrow()
-	})
-
-	test("ensureGitignored appends .command-center/ when absent", async () => {
-		await prov.ensureGitignored(repo)
-		const txt = await readFile(`${repo}/.gitignore`, "utf8")
-		expect(txt).toContain(".command-center/")
-	})
-
-	test("ensureGitignored is idempotent (no duplicate lines)", async () => {
-		await prov.ensureGitignored(repo)
-		await prov.ensureGitignored(repo)
-		const txt = await readFile(`${repo}/.gitignore`, "utf8")
-		expect(txt.match(/\.command-center\//g)).toHaveLength(1)
-	})
-
-	test("ensureGitignored appends to an existing .gitignore without breaking it", async () => {
-		await writeFile(`${repo}/.gitignore`, "node_modules\n")
-		await prov.ensureGitignored(repo)
-		const txt = await readFile(`${repo}/.gitignore`, "utf8")
-		expect(txt).toContain("node_modules")
-		expect(txt).toContain(".command-center/")
-	})
-
-	test("ensureGitignored is a no-op when already ignored (e.g. globally)", async () => {
-		// Simulate a pre-existing ignore (repo-local) — ensureGitignored must not
-		// append a duplicate or touch the file.
-		await writeFile(`${repo}/.gitignore`, ".command-center/\n")
-		await prov.ensureGitignored(repo)
-		const txt = await readFile(`${repo}/.gitignore`, "utf8")
-		expect(txt.match(/\.command-center\//g)).toHaveLength(1)
-	})
-})
-
 describe("WorktreeProvisioner — integration worktree (lead)", () => {
 	test("createIntegrationWorktree cuts the branch off HEAD and checks it out", async () => {
 		const dir = await prov.createIntegrationWorktree(repo, MISSION)

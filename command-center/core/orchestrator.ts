@@ -477,7 +477,6 @@ export class Orchestrator {
 		// invalid repo path, git missing (ENOENT), empty repo with no HEAD — no
 		// stub is left behind. Otherwise the orphaned stub would surface on the
 		// next resumeMission and re-throw forever.
-		await this.worktree.ensureGitignored(repoPath)
 		await this.worktree.createIntegrationWorktree(repoPath, missionId)
 
 		this.repoByMission.set(missionId, repoPath)
