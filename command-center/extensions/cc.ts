@@ -582,6 +582,7 @@ export interface IntercomExtensionRegistration {
 
 export default function (pi: ExtensionAPI) {
 	let intercomChannel: IntercomExtensionChannel | undefined
+	let hasWarnedAboutIntercom = false
 
 	const registration: IntercomExtensionRegistration = {
 		namespace: "command-center",
@@ -849,6 +850,19 @@ export default function (pi: ExtensionAPI) {
 		description: "Command Center: /cc <command>",
 		handler: async (args, ctx) => {
 			if (!orch) return
+
+			if (
+				process.env.HERDR_ENV === "1" &&
+				!intercomChannel &&
+				!hasWarnedAboutIntercom
+			) {
+				await ctx.ui.notify(
+					"Command Center in Herdr requires the 'pi-intercom' package for cross-pane communication. Please run: pi install npm:pi-intercom",
+					"warning",
+				)
+				hasWarnedAboutIntercom = true
+			}
+
 			const argsList = args.trim().split(" ")
 			const cmd = argsList[0]
 

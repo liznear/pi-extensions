@@ -22,11 +22,7 @@
 			"otty-integration/index.ts",
 			"command-center/index.ts",
 			"command-center/extensions/cc-highlight.ts",
-			"tweets/index.ts",
-			"node_modules/pi-intercom/index.ts"
-		],
-		"skills": [
-			"node_modules/pi-intercom/skills"
+			"tweets/index.ts"
 		]
 	},
 	"scripts": {
