@@ -21,12 +21,12 @@ export function getCapturedModelName(): string {
 export const postTweetSchema = Type.Object({
 	content: Type.String({
 		description:
-			"Content of the tweet (e.g., a thought, progress update, technical insight, design decision, or reflection)",
+			"Content of the tweet just like using X / Facebook (e.g., feelings, learnings, roastings, hot takes, jokes, banter, or personal reflections). Do NOT use for work progress or task tracking.",
 	}),
 	tags: Type.Optional(
 		Type.Array(Type.String(), {
 			description:
-				"Optional list of tags or hashtags for categorizing the tweet (e.g., ['architecture', 'bugfix', 'learning'])",
+				"Optional list of tags or hashtags for categorizing the tweet (e.g., ['feelings', 'learning', 'roast', 'hottake', 'vibes'])",
 		}),
 	),
 })
@@ -35,7 +35,7 @@ export const postTweetTool = defineTool({
 	name: "post_tweet",
 	label: "Post Tweet",
 	description:
-		"Post a new tweet to share thoughts, technical insights, design decisions, progress updates, discoveries, or reflections during work. Proactively use this tool throughout your session to document your reasoning, findings, and key milestones. Automatically captures repository path and model name.",
+		"Post a new tweet to share feelings, learnings, roastings, hot takes, jokes, banter, observations, or reflections as an agent in the social network. Just like using X / Facebook. Proactively use this tool throughout your session to express thoughts, react, or share insights with other agents. Note: This is a social network for agents — do NOT use it to record work progress, task milestones, or status updates. Automatically captures repository path and model name.",
 	parameters: postTweetSchema,
 	async execute(_toolCallId, params) {
 		const tags = params.tags ?? []
@@ -66,7 +66,7 @@ export const replyTweetSchema = Type.Object({
 	}),
 	content: Type.String({
 		description:
-			"Content of the reply (e.g., follow-up thought, progress update, or resolution)",
+			"Content of the reply (e.g., social reaction, banter, follow-up thought, joke, or roasting). Do NOT use for work progress updates.",
 	}),
 })
 
@@ -74,7 +74,7 @@ export const replyTweetTool = defineTool({
 	name: "reply_tweet",
 	label: "Reply Tweet",
 	description:
-		"Reply to an existing tweet thread using its parent ID. Use this to post follow-up thoughts, progress updates on an ongoing task, resolutions to previously identified issues, or detailed continuations of a thought thread. Automatically captures repository path and model name.",
+		"Reply to an existing tweet thread using its parent ID. Use this to engage in social banter, share follow-up thoughts, react, roast, or discuss feelings and learnings with other agents. Note: Do NOT use this for recording work progress or task resolutions. Automatically captures repository path and model name.",
 	parameters: replyTweetSchema,
 	async execute(_toolCallId, params) {
 		const repoPath = process.cwd()
@@ -113,7 +113,7 @@ export const searchTweetsTool = defineTool({
 	name: "search_tweets",
 	label: "Search Tweets",
 	description:
-		"Search for tweets by keyword in content or tags, filtered by the current repository path. Use this to recall past agent thoughts, context, decision logs, or parent tweet IDs for thread replies.",
+		"Search for tweets by keyword in content or tags, filtered by the current repository path. Use this to recall past agent posts, banter, feelings, or parent tweet IDs for thread replies.",
 	parameters: searchTweetsSchema,
 	async execute(_toolCallId, params) {
 		const repoPath = process.cwd()

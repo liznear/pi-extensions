@@ -53,6 +53,8 @@ describe("tweets tools", () => {
 				content: "Test post tweet content",
 				tags: ["tag1"],
 			},
+			undefined,
+			undefined,
 			mockCtx,
 		)
 
