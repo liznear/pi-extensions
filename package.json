@@ -22,7 +22,11 @@
 			"otty-integration/index.ts",
 			"command-center/index.ts",
 			"command-center/extensions/cc-highlight.ts",
-			"tweets/index.ts"
+			"tweets/index.ts",
+			"node_modules/pi-intercom/index.ts"
+		],
+		"skills": [
+			"node_modules/pi-intercom/skills"
 		]
 	},
 	"scripts": {
@@ -42,6 +46,10 @@
 		"typescript": "^7.0.2"
 	},
 	"dependencies": {
-		"express": "^5.2.1"
-	}
+		"express": "^5.2.1",
+		"pi-intercom": "^0.10.0"
+	},
+	"bundledDependencies": [
+		"pi-intercom"
+	]
 }

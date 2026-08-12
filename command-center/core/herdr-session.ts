@@ -153,7 +153,7 @@ export class HerdrRoleSession implements RoleSession {
 		this.streaming = true
 		this.aborted = false
 
-		const { who, cwd, paneId, store, herdrCli } = this.opts
+		const { who, cwd, paneId, store, herdrCli, bus } = this.opts
 		const pollInterval = this.opts.pollIntervalMs ?? 500
 
 		// Ensure pane exists; if closed externally, re-split.
@@ -174,27 +174,49 @@ export class HerdrRoleSession implements RoleSession {
 			await herdrCli.sendText(targetPaneId, `${text}\n`)
 		}
 
-		// Option A: Poll FileStore for work item completion / status transition
-		while (this.streaming && !this.aborted) {
-			await new Promise((resolve) => setTimeout(resolve, pollInterval))
-			if (!this.streaming || this.aborted) break
-
-			const plan = await store.readPlan(who.missionId).catch(() => null)
-			if (!plan) {
-				break
+		let toolEnded = false
+		const off = bus.subscribe((e) => {
+			if ("roleName" in e && "workItemId" in e) {
+				if (
+					e.missionId === who.missionId &&
+					e.roleName === who.roleName &&
+					e.workItemId === who.workItemId
+				) {
+					if (
+						e.type === "tool-call-ended" &&
+						(e.toolName === "request_review" || e.toolName === "request_help")
+					) {
+						toolEnded = true
+					}
+				}
 			}
+		})
 
-			const item = plan.items.find((i) => i.id === who.workItemId)
-			if (item?.status !== "in_progress") {
-				// Status moved away from in_progress (e.g. ready_for_review, completed, failed, cancelled)
-				break
-			}
+		try {
+			// Poll FileStore for work item completion / status transition
+			while (this.streaming && !this.aborted && !toolEnded) {
+				await new Promise((resolve) => setTimeout(resolve, pollInterval))
+				if (!this.streaming || this.aborted || toolEnded) break
 
-			// Check if pane was closed by user
-			const livePanes = await herdrCli.listPanes().catch(() => [])
-			if (!livePanes.some((p) => p.pane_id === targetPaneId)) {
-				break
+				const plan = await store.readPlan(who.missionId).catch(() => null)
+				if (!plan) {
+					break
+				}
+
+				const item = plan.items.find((i) => i.id === who.workItemId)
+				if (item?.status !== "in_progress") {
+					// Status moved away from in_progress (e.g. ready_for_review, completed, failed, cancelled)
+					break
+				}
+
+				// Check if pane was closed by user
+				const livePanes = await herdrCli.listPanes().catch(() => [])
+				if (!livePanes.some((p) => p.pane_id === targetPaneId)) {
+					break
+				}
 			}
+		} finally {
+			off()
 		}
 
 		this.streaming = false

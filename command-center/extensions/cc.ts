@@ -1,5 +1,5 @@
-import path from "node:path"
 import type {
+	AgentSessionEvent,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
@@ -324,7 +324,7 @@ async function requireAttachedLeadMission(
 }
 
 function normalizedPath(p: string): string {
-	return path.resolve(p)
+	return p // using simple string equality instead of path.resolve
 }
 
 /**
@@ -338,11 +338,11 @@ function visibleRoleForMission(
 ): RoleIdentity | undefined {
 	const cwdNorm = normalizedPath(cwd)
 	const prefix = normalizedPath(
-		path.join(worktreeRoot(mission.repoPath), mission.id),
+		`${worktreeRoot(mission.repoPath)}/${mission.id}`,
 	)
-	if (cwdNorm !== prefix && !cwdNorm.startsWith(prefix + path.sep)) return
-	const relative = path.relative(prefix, cwdNorm)
-	const [child] = relative.split(path.sep)
+	if (cwdNorm !== prefix && !cwdNorm.startsWith(`${prefix}/`)) return
+	const relative = cwdNorm.substring(prefix.length).replace(/^\//, "")
+	const [child] = relative.split("/")
 	if (child === "integration") {
 		return { missionId: mission.id, roleName: "mission_lead" }
 	}
@@ -525,7 +525,78 @@ async function refreshMissionsWidget(): Promise<void> {
 	})
 }
 
+import type { EmittableEvent } from "../core/events"
+
+export interface IntercomExtensionOwner {
+	sessionId: string
+	epoch: string
+}
+
+export interface IntercomExtensionState {
+	revision: number
+	payload: unknown
+}
+
+export type IntercomExtensionEvent =
+	| { type: "connection"; connected: boolean; supported: boolean }
+	| { type: "owner"; owner?: IntercomExtensionOwner }
+	| {
+			type: "message"
+			fromSessionId: string
+			owner?: IntercomExtensionOwner
+			payload: unknown
+	  }
+	| { type: "state"; state: IntercomExtensionState }
+	| {
+			type: "state_result"
+			committed: boolean
+			revision: number
+			reason?: string
+	  }
+	| { type: "session_joined"; session: unknown }
+	| { type: "session_left"; sessionId: string }
+	| { type: "presence_update"; session: unknown }
+
+export interface IntercomExtensionChannel {
+	readonly namespace: string
+	snapshot(): {
+		connected: boolean
+		supported: boolean
+		owner?: IntercomExtensionOwner
+		state?: IntercomExtensionState
+	}
+	publish(
+		payload: unknown,
+		options?: { audience?: "owner" | "capable"; ownerOnly?: boolean },
+	): void
+	commitState(payload: unknown, expectedRevision?: number): void
+	listSessions(): Promise<unknown[]>
+}
+
+export interface IntercomExtensionRegistration {
+	namespace: string
+	ownerEligible: boolean
+	onEvent(event: IntercomExtensionEvent): void
+	onReady(channel: IntercomExtensionChannel): void
+}
+
 export default function (pi: ExtensionAPI) {
+	let intercomChannel: IntercomExtensionChannel | undefined
+
+	const registration: IntercomExtensionRegistration = {
+		namespace: "command-center",
+		ownerEligible: false,
+		onEvent: (event) => {
+			if (event.type === "message" && orch) {
+				const normalized = event.payload as EmittableEvent
+				orch.bus.emit(normalized)
+			}
+		},
+		onReady: (channel) => {
+			intercomChannel = channel
+		},
+	}
+	pi.events.emit("intercom:extension-register", registration)
 	extensionPi = pi
 
 	// `session_info_changed` is available in the runtime even when older SDK
@@ -680,6 +751,24 @@ export default function (pi: ExtensionAPI) {
 		const visibleRole = await currentVisibleRole(ctx)
 		if (visibleRole?.roleName === "mission_lead") {
 			await orch.bindVisibleLead(visibleRole.missionId)
+		} else if (visibleRole?.roleName === "work_item_owner") {
+			const { createDomainTools } = await import("../core/tools/tool_factory")
+			const mission = await orch.store.readMission(visibleRole.missionId)
+			if (mission) {
+				const tools = createDomainTools(
+					{
+						who: visibleRole,
+						repoPath: mission.repoPath,
+						cwd: ctx.cwd,
+						store: orch.store,
+						bus: orch.bus,
+					},
+					["update_memory", "request_review", "request_help"],
+				)
+				for (const tool of tools) {
+					pi.registerTool(tool)
+				}
+			}
 		}
 
 		// /cc argument completions via a wrapper around the built-in provider.
@@ -711,6 +800,32 @@ export default function (pi: ExtensionAPI) {
 				)
 			},
 		}))
+	})
+
+	const onRawSessionEvent = pi.on.bind(pi) as (
+		event: string,
+		handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>,
+	) => void
+
+	onRawSessionEvent("tool_execution_end", async (event, ctx) => {
+		const visibleRole = await currentVisibleRole(ctx)
+		if (visibleRole?.roleName === "work_item_owner") {
+			const raw = event as AgentSessionEvent
+			if (
+				raw.type === "tool_execution_end" &&
+				(raw.toolName === "request_review" || raw.toolName === "request_help")
+			) {
+				const { normalizePiEvent } = await import("../core/session")
+				const normalized = normalizePiEvent(
+					visibleRole,
+					ctx.sessionManager.getSessionId(),
+					raw,
+				)
+				if (normalized && intercomChannel) {
+					intercomChannel.publish(normalized, { audience: "capable" })
+				}
+			}
+		}
 	})
 
 	pi.on("session_before_switch", () => {
