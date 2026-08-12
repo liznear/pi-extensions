@@ -6,8 +6,12 @@ import type {
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
+import {
+	createAutoSessionRunner,
+	isHerdrEnv,
+	isOrcaEnv,
+} from "../core/auto-session"
 import { FileDriverLock } from "../core/driver-lock"
-import { createAutoSessionRunner } from "../core/herdr-session"
 import { Orchestrator } from "../core/orchestrator"
 import { FileStore } from "../core/store-file"
 import type { MissionSummary, RoleIdentity, RoleName } from "../core/types"
@@ -852,12 +856,12 @@ export default function (pi: ExtensionAPI) {
 			if (!orch) return
 
 			if (
-				process.env.HERDR_ENV === "1" &&
+				(isHerdrEnv() || isOrcaEnv()) &&
 				!intercomChannel &&
 				!hasWarnedAboutIntercom
 			) {
 				await ctx.ui.notify(
-					"Command Center in Herdr requires the 'pi-intercom' package for cross-pane communication. Please run: pi install npm:pi-intercom",
+					"Command Center in Herdr or Orca requires the 'pi-intercom' package for cross-pane communication. Please run: pi install npm:pi-intercom",
 					"warning",
 				)
 				hasWarnedAboutIntercom = true

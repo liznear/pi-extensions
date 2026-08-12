@@ -1,21 +1,19 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-	ToolDefinition,
-} from "@earendil-works/pi-coding-agent"
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { EventBus } from "./events"
-import {
-	PiSessionRunner,
-	PiVisibleLeadSessionRunner,
-	type RoleSession,
-	type SessionRunner,
-} from "./session"
+import type { RoleSession, SessionRunner } from "./session"
 import type { Store } from "./store"
 import type { RoleIdentity } from "./types"
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Checks whether the current process is running inside a Herdr environment.
+ */
+export function isHerdrEnv(): boolean {
+	return process.env.HERDR_ENV === "1"
+}
 
 // ---------------------------------------------------------------------------
 // Herdr CLI Abstraction
@@ -43,7 +41,7 @@ export interface HerdrCli {
 
 export class DefaultHerdrCli implements HerdrCli {
 	isHerdrEnv(): boolean {
-		return process.env.HERDR_ENV === "1"
+		return isHerdrEnv()
 	}
 
 	async splitPane(opts: {
@@ -282,69 +280,4 @@ export class HerdrSessionRunner implements SessionRunner {
 			pollIntervalMs: this.opts.pollIntervalMs,
 		})
 	}
-}
-
-// ---------------------------------------------------------------------------
-// AutoSessionRunner / Factory
-// ---------------------------------------------------------------------------
-
-export interface AutoSessionRunnerOptions {
-	bus: EventBus
-	store: Store
-	pi?: ExtensionAPI
-	getContext?: () => ExtensionContext | undefined
-	resolveVisibleRole?: (
-		ctx: ExtensionContext,
-	) => Promise<RoleIdentity | undefined>
-	fallbackRunner?: SessionRunner
-	herdrRunner?: SessionRunner
-	isHerdrEnv?: () => boolean
-}
-
-export class AutoSessionRunner implements SessionRunner {
-	private readonly fallbackRunner: SessionRunner
-	private readonly herdrRunner: SessionRunner
-	private readonly isHerdrEnvFn: () => boolean
-
-	constructor(opts: AutoSessionRunnerOptions) {
-		this.isHerdrEnvFn = opts.isHerdrEnv ?? (() => process.env.HERDR_ENV === "1")
-
-		this.fallbackRunner =
-			opts.fallbackRunner ??
-			(opts.pi && opts.getContext && opts.resolveVisibleRole
-				? new PiVisibleLeadSessionRunner({
-						bus: opts.bus,
-						store: opts.store,
-						pi: opts.pi,
-						getContext: opts.getContext,
-						resolveVisibleRole: opts.resolveVisibleRole,
-					})
-				: new PiSessionRunner({ bus: opts.bus, store: opts.store }))
-
-		this.herdrRunner =
-			opts.herdrRunner ??
-			new HerdrSessionRunner({ bus: opts.bus, store: opts.store })
-	}
-
-	async startOrResume(
-		who: RoleIdentity,
-		cwd: string,
-		systemPrompt: string,
-		tools: ToolDefinition[],
-	): Promise<RoleSession> {
-		const isHerdr = this.isHerdrEnvFn()
-
-		// Herdr pane runner is used specifically for work_item_owner sessions when running in Herdr
-		if (isHerdr && who.roleName === "work_item_owner") {
-			return this.herdrRunner.startOrResume(who, cwd, systemPrompt, tools)
-		}
-
-		return this.fallbackRunner.startOrResume(who, cwd, systemPrompt, tools)
-	}
-}
-
-export function createAutoSessionRunner(
-	opts: AutoSessionRunnerOptions,
-): SessionRunner {
-	return new AutoSessionRunner(opts)
 }

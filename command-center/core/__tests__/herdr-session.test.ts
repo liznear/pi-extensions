@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { AutoSessionRunner } from "../auto-session"
 import { EventBus } from "../events"
 import {
-	AutoSessionRunner,
 	type HerdrCli,
 	type HerdrPaneInfo,
 	HerdrRoleSession,
 	HerdrSessionRunner,
+	isHerdrEnv,
 } from "../herdr-session"
 import type { RoleSession, SessionRunner } from "../session"
 import { InMemoryStore } from "../store"
@@ -77,6 +78,21 @@ class MockHerdrCli implements HerdrCli {
 	}
 }
 
+describe("isHerdrEnv", () => {
+	test("returns true when HERDR_ENV is 1", () => {
+		const orig = process.env.HERDR_ENV
+		try {
+			delete process.env.HERDR_ENV
+			expect(isHerdrEnv()).toBe(false)
+			process.env.HERDR_ENV = "1"
+			expect(isHerdrEnv()).toBe(true)
+		} finally {
+			if (orig !== undefined) process.env.HERDR_ENV = orig
+			else delete process.env.HERDR_ENV
+		}
+	})
+})
+
 describe("AutoSessionRunner", () => {
 	test("dispatches lead role to fallback runner even in Herdr environment", async () => {
 		const fallback = new MockSessionRunner()
@@ -87,6 +103,7 @@ describe("AutoSessionRunner", () => {
 			fallbackRunner: fallback,
 			herdrRunner: herdr,
 			isHerdrEnv: () => true,
+			isOrcaEnv: () => false,
 		})
 
 		await runner.startOrResume(leadRole, "/tmp", "sys", [])
@@ -104,6 +121,7 @@ describe("AutoSessionRunner", () => {
 			fallbackRunner: fallback,
 			herdrRunner: herdr,
 			isHerdrEnv: () => false,
+			isOrcaEnv: () => false,
 		})
 
 		await runner.startOrResume(ownerRole, "/tmp", "sys", [])
@@ -121,6 +139,7 @@ describe("AutoSessionRunner", () => {
 			fallbackRunner: fallback,
 			herdrRunner: herdr,
 			isHerdrEnv: () => true,
+			isOrcaEnv: () => false,
 		})
 
 		await runner.startOrResume(ownerRole, "/tmp", "sys", [])
