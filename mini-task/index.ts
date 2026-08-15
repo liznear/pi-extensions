@@ -12,9 +12,6 @@
  *
  * Command (user-facing):
  *   /mini-task          - Enable mini-task management, show dashboard
- *
- * Warning!!!!:
- *   this requires a patch on Pi to set expandPromptTemplates as true in sendUserMessage.
  */
 
 import type {
@@ -940,6 +937,7 @@ export default function (pi: ExtensionAPI) {
 
 			pi.sendUserMessage("/mini-task-handoff", {
 				deliverAs: "followUp",
+				expandPromptTemplates: true,
 			})
 			return {
 				content: [
