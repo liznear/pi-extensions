@@ -587,6 +587,9 @@ export interface IntercomExtensionRegistration {
 export default function (pi: ExtensionAPI) {
 	let intercomChannel: IntercomExtensionChannel | undefined
 	let hasWarnedAboutIntercom = false
+	// Set when pi-intercom confirms the registration via onReady — proof that a
+	// registration actually landed (vs. an emit that no listener received).
+	let intercomRegistered = false
 
 	const registration: IntercomExtensionRegistration = {
 		namespace: "command-center",
@@ -599,9 +602,23 @@ export default function (pi: ExtensionAPI) {
 		},
 		onReady: (channel) => {
 			intercomChannel = channel
+			intercomRegistered = true
 		},
 	}
-	pi.events.emit("intercom:extension-register", registration)
+	// Load-order robustness: pi-intercom only listens for registrations after
+	// its own factory runs, and this bundle is typically listed BEFORE
+	// npm:pi-intercom in settings packages — a bare factory-time emit fires
+	// before any listener exists and is silently lost, so the channel never
+	// becomes ready and /cc warns "requires pi-intercom" even though it is
+	// installed. pi-intercom announces "intercom:extension-registry-ready" once
+	// its registry is live; re-register then. onReady arms the guard, so a lost
+	// emit retries on the announcement and a landed one never duplicates.
+	const registerIntercom = (): void => {
+		if (intercomRegistered) return
+		pi.events.emit("intercom:extension-register", registration)
+	}
+	registerIntercom()
+	pi.events.on("intercom:extension-registry-ready", registerIntercom)
 	extensionPi = pi
 
 	// `session_info_changed` is available in the runtime even when older SDK
