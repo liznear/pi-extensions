@@ -1,7 +1,8 @@
 # Handoff: Message-Driven Actor Graph Extension Design & PoC
 
 ## Context & Motivation
-The user identified that the existing `command-center` extension is conceptually a specialized instance of Graph Engineering (a fixed Meta-Graph of Lead planning -> Work item execution -> Review/Reject loop -> Merge). 
+
+The user identified that the existing `command-center` extension is conceptually a specialized instance of Graph Engineering (a fixed Meta-Graph of Lead planning -> Work item execution -> Review/Reject loop -> Merge).
 The goal is to design and implement a more generalized graph workflow extension in this repo (`pi-extensions`) that can parse a graph definition and execute arbitrary multi-agent workflows.
 
 ## Key Decisions Reached
@@ -47,6 +48,7 @@ The goal is to design and implement a more generalized graph workflow extension 
    - Run `bun run verify` to ensure zero lint/type/test errors.
 
 ## Suggested Skills
+
 - `plan` / `write-plan`: To structure the concrete implementation phases for the PoC.
 - `tdd`: For implementing the graph parser, DAG scheduler, and session lifecycle state machines test-first.
 - `pi-intercom`: For deep integration with session-to-session messaging primitives.
