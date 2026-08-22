@@ -24,6 +24,7 @@ A spec (`plans/actor-graph-rfc.md`) plus a minimal, functional PoC — an **inde
 <!-- one line per closed ticket: gist + link -->
 
 - [How does an extension spawn and address headless Pi sessions?](issues/01-session-spawning-mechanics.md) — spawn actors in-process via `createAgentSession()` (or `pi --mode rpc --name` subprocesses), address them by Pi session name mirrored into intercom presence, observe via `session.subscribe` + pi-intercom extension channels; command-center's SessionRunner seam/normalizePiEvent are the patterns to re-implement.
+- [How does the typed message envelope map onto intercom send/ask/reply?](issues/02-intercom-envelope-mapping.md) — in-process SDK sessions (intercom = observation plane, not bus); envelope = actor-declared `msg_id/type/task_id/payload` + coordinator-stamped `sender/iteration/channel`; emit is a customTool with refusal feedback; delivery via `sendCustomMessage` (verified transcript-persistent); `/graph steer` with autocomplete for live intervention; envelope physically lacks address fields — channels own "where"; type-level upstream/downstream view injected into actor prompts by default (`disable_graph_context` opt-out).
 
 ## Not yet specified
 

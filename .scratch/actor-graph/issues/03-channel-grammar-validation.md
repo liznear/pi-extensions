@@ -2,7 +2,6 @@
 
 Status: open
 Type: grilling
-Blocked by: 02
 Parent map: [Actor-Graph map](../map.md)
 
 ## Question
