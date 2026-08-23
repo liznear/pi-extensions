@@ -2,7 +2,7 @@
 
 Status: open
 Type: grilling
-Blocked by: 03, 05
+Blocked by: 05
 Parent map: [Actor-Graph map](../map.md)
 
 ## Question
@@ -16,5 +16,5 @@ Pin the **example graph and the acceptance bar** for the PoC:
 
 ## Context
 
-- Blocked by the channel grammar (Ticket 03) and event schema (Ticket 05) — acceptance references both.
+- Blocked by the event schema (Ticket 05) — acceptance references the final grammar (Ticket 03, resolved) and the event schema.
 - This ticket closes the decision phase; after it resolves, the map's remaining work is execution slices (spec authoring, scaffold, runner, TUI, tests — see map fog), sized per the spec.
