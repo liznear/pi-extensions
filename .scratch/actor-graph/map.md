@@ -31,15 +31,13 @@ A spec (`plans/actor-graph-rfc.md`) plus a minimal, functional PoC — an **inde
 - [What event stream suffices to render the graph dashboard?](issues/05-event-schema-prototype.md) — envelope `{v,seq,ts,run_id,graph_id}` (gap-free seq = resume cursor), 23 event types / 6 families; correlation by stable ids with **all views derived** (no blackboard events — it's a derived view); message flow stays stage-split (emitted→routed→delivered per recipient); consumption = in-process reducer + append-only `runs/<run-id>/events.jsonl` + pi-intercom extension channel `actor-graph/v1`; prototype + demo in [prototype/](prototype/), decisions grilled and applied there.
 - [Which example graph proves the PoC, and what is acceptance?](issues/06-example-graph-acceptance.md) — canonical example = review-pipeline (worktree, quotas, complete_task merge); ships with pair.yaml (driver↔navigator, shared, no quotas, task_complete_type); two-tier bar: Tier 1 automated FakeSessionRunner harness in `bun run verify` (8 items incl. abort/resume replay + gc), Tier 2 = one real-LLM demo run on a generated throwaway repo (`bun run demo:graph` story); not proven: LLM convergence quality, cross-process fan-out, coordinator crash recovery, GC timing.
 - [Spike — does the execution model actually run with real sessions?](issues/08-spike-execution.md) — **YES**: 3 real-LLM runs to clean terminals — happy-path lgtm (37 events), planted-conflict debate loop → quota refusal at 3/3 → exhausted (75 events), omission-fix loop → lgtm (64 events); all mechanics proven (lazy spawn, back-edge routing w/ iteration counters, quota refusal in-turn, sendCustomMessage delivery, gap-free schema-v1 events replaying via prototype reducer); 9 SDK/LLM lessons recorded in the ticket (allowlist filters customTools; promptSnippet dead under replaced system prompt; turn-end-without-emit stall detectable; …).
+- [Write the actor-graph RFC consolidating the resolved decisions](issues/07-spec-rfc.md) — RFC authored at `plans/actor-graph-rfc.md` (15 sections + template appendix; verify green): architecture/grammar/validator/envelope/routing/workspace/events/acceptance consolidated + 9 spike lessons made normative; 2 delegated micro-decisions made (stall = fast-fail, graceful drain); **7 gaps surfaced as OQ1–OQ7 with recommendations, not decided** (runner pseudo-role, kickoff delivery, multi-pipeline create_task, completion semantics, blackboard reads, runs-dir conflict); fog graduated into sized tickets 09–13.
 
 ## Not yet specified
 
 <!-- in-scope fog; graduates as the frontier advances -->
 
-- **Extension scaffold & registration** — directory layout, registration under root `package.json` `pi.extensions`, test wiring; sized by the RFC (ticket 07).
-- **Runner implementation slices** — YAML parser/validator, session coordinator, channel router, `emit` tool, quota counters; sized by the RFC.
-- **TUI progress component** — the trigger-session widget consuming the event stream; shape fixed by [prototype/](prototype/) mock + schema v1, sizing by the RFC.
-- **Tests + acceptance run** — Tier 1 harness and Tier 2 demo per ticket 06; blocked on implementation slices existing.
+<!-- all fog graduated by ticket 07: scaffold→09, runner→10, TUI→11, tests→12; OQ gaps→13. New execution fog may gather as 09–13 resolve. -->
 
 ## Out of scope
 
