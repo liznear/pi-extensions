@@ -28,16 +28,16 @@ A spec (`plans/actor-graph-rfc.md`) plus a minimal, functional PoC — an **inde
 - [What is the YAML grammar for channels, and what can be statically validated?](issues/03-channel-grammar-validation.md) — final grammar in [research/03-channels-grammar-final.md](research/03-channels-grammar-final.md): explicit multicast (`to` string|array, ambiguity = load error), `create_task` tool factory (can_create_tasks gate) with planned-state registration + lazy session spawn, loop protection via per-type `max_per_task` quotas (emit errors in-turn, guiding LLM convergence) instead of max_iterations/watchdog, tools physically scoped to spawned sessions, validator rules + line-precise error UX.
 - [How are shared state (blackboard) and per-task workspaces isolated?](issues/04-blackboard-workspace-isolation.md) — blackboard = runner-derived materialized view of message flow (no actor writes), persisted to `runs/<run-id>/blackboard.json`; workspace = integration-tree worktree architecture (task worktrees branch from integration state; `complete_task` owner-only tool atomically merges — success = done, conflict = in-loop error) or shared mode; lifecycle: abort retains all, resume rebuilds from disk (simple no-exactly-once), 60-day auto-GC + `/graph gc`, `/graph delete`.
 - [What event stream suffices to render the graph dashboard?](issues/05-event-schema-prototype.md) — envelope `{v,seq,ts,run_id,graph_id}` (gap-free seq = resume cursor), 23 event types / 6 families; correlation by stable ids with **all views derived** (no blackboard events — it's a derived view); message flow stays stage-split (emitted→routed→delivered per recipient); consumption = in-process reducer + append-only `runs/<run-id>/events.jsonl` + pi-intercom extension channel `actor-graph/v1`; prototype + demo in [prototype/](prototype/), decisions grilled and applied there.
+- [Which example graph proves the PoC, and what is acceptance?](issues/06-example-graph-acceptance.md) — canonical example = review-pipeline (worktree, quotas, complete_task merge); ships with pair.yaml (driver↔navigator, shared, no quotas, task_complete_type); two-tier bar: Tier 1 automated FakeSessionRunner harness in `bun run verify` (8 items incl. abort/resume replay + gc), Tier 2 = one real-LLM demo run on a generated throwaway repo (`bun run demo:graph` story); not proven: LLM convergence quality, cross-process fan-out, coordinator crash recovery, GC timing.
 
 ## Not yet specified
 
 <!-- in-scope fog; graduates as the frontier advances -->
 
-- **Spec authoring (RFC consolidation)** — merging the envelope, grammar, state, and event-schema answers into `plans/actor-graph-rfc.md`; sharp only once those tickets close.
-- **Extension scaffold & registration** — directory layout (e.g. `pi-graph/`), registration under root `package.json` `pi.extensions`, test wiring.
-- **Runner implementation slices** — YAML parser/validator, session coordinator (spawn/name/lifecycle of headless sessions), channel router, `emit` tool implementation, revision-loop iteration counters; sized after the spec exists.
-- **TUI progress component** — the trigger-session widget consuming the event stream; shape depends on the event schema ticket.
-- **Tests + acceptance run** — unit tests under the extension dir, `bun run verify` green, example graph end-to-end.
+- **Extension scaffold & registration** — directory layout, registration under root `package.json` `pi.extensions`, test wiring; sized by the RFC (ticket 07).
+- **Runner implementation slices** — YAML parser/validator, session coordinator, channel router, `emit` tool, quota counters; sized by the RFC.
+- **TUI progress component** — the trigger-session widget consuming the event stream; shape fixed by [prototype/](prototype/) mock + schema v1, sizing by the RFC.
+- **Tests + acceptance run** — Tier 1 harness and Tier 2 demo per ticket 06; blocked on implementation slices existing.
 
 ## Out of scope
 
