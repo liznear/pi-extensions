@@ -114,6 +114,26 @@ channels:
 | R12 | at least one `can_create_tasks: true` role exists when the graph has `per_task` nodes; its emits cover the trigger types routed into those pipelines |
 | R13 | lazy spawn only for `scoped_to: task` targets; `scoped_to: graph` targets must be `singleton` nodes |
 | R14 | `create_task` injection gated by `can_create_tasks` (default false) |
+| R15 | (from ticket 04) an identifiable task-terminal signal exists: `complete_task` (worktree mode, via `owner`) or declared `task_complete_type` (shared mode) |
+| R16 | (from ticket 04) exactly one `owner: true` role per `per_task` pipeline; `complete_task` injected only into it |
+
+## Addendum (ticket 04): workspace & lifecycle sections
+
+```yaml
+workspace:
+  mode: worktree            # worktree | shared (isolated_dirs cut)
+  task_complete_type: merged  # shared mode only: message type marking a task terminal
+
+nodes:
+  - roles: [coder, critic]
+    lifecycle: per_task
+    owner: coder             # exactly one owner per pipeline (R16); receives complete_task tool
+```
+
+- **worktree mode**: runner creates `runs/<run-id>/integration/` (integration tree) at start; `create_task` branches a task worktree from the latest integration state; `complete_task` (owner-only tool) atomically merges into the integration tree — success marks done + synthesizes `task_done`; conflict returns a tool error for in-loop resolution. Task worktrees are deleted after successful merge.
+- **shared mode**: no isolation, no `complete_task`; terminal state via `task_complete_type`.
+- **Run lifecycle**: `/graph abort` (retain all) · `/graph resume <run-id>` (rebuild from blackboard + event log; transcripts auto-resume; emits already logged = processed, un-emitted lost — no exactly-once) · `/graph gc [--days N]` + 60-day auto-GC on start · `/graph delete <id>` (full cleanup).
+- Blackboard: `runs/<run-id>/blackboard.json`, runner-derived from message flow only (no actor writes in v1); messages carry workspace paths, not content.
 
 ## Error UX
 
