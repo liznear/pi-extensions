@@ -489,7 +489,13 @@ const TreeParams = Type.Object({})
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-	// Reconstruct state on session events
+  // Only enable if not in BB
+  if (process.env.BB_THREAD_ID !== '') {
+    return
+  }
+
+
+  // Reconstruct state on session events
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		isEnabled = true
 		state = new State(ctx)
