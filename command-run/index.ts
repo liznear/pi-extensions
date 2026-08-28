@@ -95,10 +95,12 @@ interface ToolExecResult {
 interface SubResult {
 	index: number
 	commandType: string
+	command: string
 	detail?: string
 	step: number
 	status: "ok" | "error"
 	output: string
+	fullOutput: string
 	error?: string
 	truncated?: boolean
 	outputBytes?: number
@@ -120,6 +122,8 @@ interface CommandRunDetails {
 		status: "ok" | "error"
 		error?: string
 		truncated?: boolean
+		command?: string
+		output?: string
 		preview?: string
 	}>
 }
@@ -200,6 +204,16 @@ function formatCommandDetail(
 	return detail
 }
 
+function formatFullCommand(
+	commandType: string,
+	params: Record<string, unknown>,
+): string {
+	if (commandType === "bash" && typeof params.command === "string") {
+		return params.command
+	}
+	return `${commandType} ${JSON.stringify(params)}`
+}
+
 interface CommandJob {
 	commandType: string
 	parameters: Record<string, unknown>
@@ -215,13 +229,15 @@ async function runCommand(
 	const { commandType, parameters, step, index } = job
 	const tool = dispatch[commandType]
 	const detail = formatCommandDetail(commandType, parameters)
-	const base = { index, commandType, detail, step }
+	const command = formatFullCommand(commandType, parameters)
+	const base = { index, commandType, command, detail, step }
 
 	if (!tool) {
 		return {
 			...base,
 			status: "error",
 			output: "",
+			fullOutput: "",
 			error: `Unsupported command_type '${commandType}'. Supported: ${SUPPORTED_TOOLS.join(", ")}.`,
 		}
 	}
@@ -246,12 +262,19 @@ async function runCommand(
 			...base,
 			status: "ok",
 			output: truncation.content,
+			fullOutput: text,
 			truncated: truncation.truncated,
 			outputBytes: truncation.outputBytes,
 			totalBytes: truncation.totalBytes,
 		}
 	} catch (error) {
-		return { ...base, status: "error", output: "", error: errorMessage(error) }
+		return {
+			...base,
+			status: "error",
+			output: "",
+			fullOutput: "",
+			error: errorMessage(error),
+		}
 	}
 }
 
@@ -354,7 +377,8 @@ function buildFinalResult(
 				status: result.status,
 				error: result.error,
 				truncated: result.truncated,
-				preview: result.output.slice(0, 160),
+				command: result.command,
+				output: result.fullOutput,
 			})),
 		},
 	}
@@ -523,6 +547,27 @@ export default function commandRunExtension(pi: ExtensionAPI): void {
 					)
 					if (command.error) {
 						lines.push(theme.fg("dim", `      ${command.error}`))
+					}
+					const fullCommand =
+						command.command ?? command.detail ?? command.commandType
+					const fullOutput = command.output ?? command.preview ?? ""
+					lines.push(theme.fg("dim", "      command:"))
+					lines.push(
+						...fullCommand
+							.split("\n")
+							.map((line) => theme.fg("toolOutput", `        ${line}`)),
+					)
+					if (command.status === "ok") {
+						lines.push(theme.fg("dim", "      output:"))
+						if (fullOutput) {
+							lines.push(
+								...fullOutput
+									.split("\n")
+									.map((line) => theme.fg("toolOutput", `        ${line}`)),
+							)
+						} else {
+							lines.push(theme.fg("dim", "        (no output)"))
+						}
 					}
 				}
 			} else if (!options.expanded) {
