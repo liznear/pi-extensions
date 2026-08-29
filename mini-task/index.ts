@@ -18,6 +18,7 @@ import type {
 	AgentToolResult,
 	ExtensionAPI,
 	ExtensionContext,
+	SessionManager,
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui"
@@ -569,13 +570,11 @@ export default function (pi: ExtensionAPI) {
 			const sm = ctx.sessionManager
 			let newLeafId: string
 			try {
-				// SAFETY: branchWithSummary exists on SessionManager at runtime but is
-				// not in its public type yet; the signature mirrors the implementation.
-				newLeafId = (
-					sm as unknown as {
-						branchWithSummary: (...args: unknown[]) => string
-					}
-				).branchWithSummary(
+				// SAFETY: ctx.sessionManager is narrowed to ReadonlySessionManager, which
+				// deliberately omits mutating methods; at runtime it IS the full
+				// SessionManager instance and branchWithSummary is public API
+				// (session-manager.d.ts), so narrowing the view back is sound.
+				newLeafId = (sm as SessionManager).branchWithSummary(
 					handoff.task.startEntryId,
 					`(handoff from ${handoff.origin})\n${handoff.enrichedSummary}`,
 					undefined,
