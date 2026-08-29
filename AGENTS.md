@@ -9,3 +9,4 @@ This repo provides a list of extensions for Pi Coding Agent.
 ## Core Principles
 
 - Make changes in this repo. DO NOT change anything in ~/.pi/agents.
+- Load this repo using `pi -ne -e <this repo>`.
