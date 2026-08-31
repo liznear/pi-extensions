@@ -1,0 +1,46 @@
+# Canonical review pipeline (RFC Appendix A) — worktree mode, quota'd revision loop.
+# graph id = filename stem. Copy this whole directory into ~/.pi/graphs/.
+graph: review-pipeline
+version: 1
+
+workspace:
+  mode: worktree
+
+roles:
+  coordinator:
+    system_prompt_file: prompts/coordinator.md
+    tools: [read, bash]
+    can_create_tasks: true
+    emits:
+      - type: task_assigned
+    receives: [task_done]          # synthesized task_done flows here
+
+  coder:
+    system_prompt_file: prompts/coder.md
+    tools: [read, write, edit, bash, ls, find, grep]
+    emits:
+      - type: pr_ready
+        max_per_task: 3
+    receives: [task_assigned, revision]
+
+  critic:
+    system_prompt_file: prompts/critic.md
+    tools: [read, bash, ls, find, grep]
+    emits:
+      - type: revision
+        max_per_task: 3
+      - type: lgtm
+    receives: [pr_ready]
+
+nodes:
+  - role: coordinator
+    lifecycle: singleton
+  - roles: [coder, critic]
+    lifecycle: per_task
+    owner: coder                   # complete_task (the merge) lands here
+
+channels:
+  - {id: assign, from: coordinator, to: coder,      when: msg.type == task_assigned, scoped_to: task}
+  - {id: review, from: coder,       to: critic,     when: msg.type == pr_ready,     scoped_to: task}
+  - {id: revise, from: critic,      to: coder,      when: msg.type == revision,     scoped_to: task}
+  - {id: done,   from: runner,      to: coordinator, when: msg.type == task_done,   scoped_to: task}

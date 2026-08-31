@@ -22,7 +22,8 @@
 			"command-run/index.ts",
 			"otty-integration/index.ts",
 			"command-center/index.ts",
-			"command-center/extensions/cc-highlight.ts"
+			"command-center/extensions/cc-highlight.ts",
+			"actor-graph/index.ts"
 		]
 	},
 	"scripts": {
@@ -31,7 +32,8 @@
 		"typecheck": "tsc --noEmit",
 		"check": "biome check .",
 		"check:fix": "biome check . --fix",
-		"verify": "bun run check && bun run typecheck && bun test"
+		"verify": "bun run check && bun run typecheck && bun test",
+		"demo:graph": "bun run scripts/demo-graph.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.7",

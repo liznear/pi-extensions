@@ -489,13 +489,12 @@ const TreeParams = Type.Object({})
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-  // Only enable if not in BB
-  if (process.env.BB_THREAD_ID !== '') {
-    return
-  }
+	// Only enable if not in BB
+	if (process.env.BB_THREAD_ID !== "") {
+		return
+	}
 
-
-  // Reconstruct state on session events
+	// Reconstruct state on session events
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		isEnabled = true
 		state = new State(ctx)
@@ -570,6 +569,8 @@ export default function (pi: ExtensionAPI) {
 			const sm = ctx.sessionManager
 			let newLeafId: string
 			try {
+				// SAFETY: branchWithSummary exists on SessionManager at runtime but is
+				// not in its public type yet; the signature mirrors the implementation.
 				newLeafId = (
 					sm as unknown as {
 						branchWithSummary: (...args: unknown[]) => string
@@ -943,7 +944,6 @@ export default function (pi: ExtensionAPI) {
 
 			pi.sendUserMessage("/mini-task-handoff", {
 				deliverAs: "followUp",
-				expandPromptTemplates: true,
 			})
 			return {
 				content: [

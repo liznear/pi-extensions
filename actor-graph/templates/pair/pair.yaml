@@ -1,0 +1,48 @@
+# The counter-example template (RFC Appendix A) — shared workspace, free exchange, no quotas.
+# graph id = filename stem. Copy this whole directory into ~/.pi/graphs/.
+graph: pair
+version: 1
+
+workspace:
+  mode: shared
+  task_complete_type: pair_done
+
+roles:
+  coordinator:
+    system_prompt_file: prompts/coordinator.md
+    tools: [read, bash]
+    can_create_tasks: true
+    emits:
+      - type: task_assigned
+    receives: [pair_done]
+
+  driver:
+    system_prompt_file: prompts/driver.md
+    tools: [read, write, edit, bash, ls, find, grep]
+    emits:
+      - type: question
+      - type: handoff
+    receives: [task_assigned, answer, handoff]
+
+  navigator:
+    system_prompt_file: prompts/navigator.md
+    tools: [read, bash, ls, find, grep]
+    emits:
+      - type: answer
+      - type: handoff
+      - type: pair_done
+    receives: [question, handoff]
+
+nodes:
+  - role: coordinator
+    lifecycle: singleton
+  - roles: [driver, navigator]
+    lifecycle: per_task            # shared mode: no owner, no complete_task
+
+channels:
+  - {id: assign,    from: coordinator, to: driver,   when: msg.type == task_assigned, scoped_to: task}
+  - {id: ask,       from: driver,      to: navigator, when: msg.type == question,     scoped_to: task}
+  - {id: answer,    from: navigator,   to: driver,    when: msg.type == answer,       scoped_to: task}
+  - {id: hand_fwd,  from: driver,      to: navigator, when: msg.type == handoff,      scoped_to: task}
+  - {id: hand_back, from: navigator,   to: driver,    when: msg.type == handoff,      scoped_to: task}
+  - {id: conclude,  from: navigator,   to: runner,    when: msg.type == pair_done,    scoped_to: task}
