@@ -212,12 +212,63 @@ function estimateMessageSegments(message: TokenMessage): TokenSegment[] {
 	}
 }
 
-function getContextTokenSegments(ctx: ExtensionContext): TokenSegment[] {
+function getBranchMessages(ctx: ExtensionContext): TokenMessage[] {
 	const context = buildSessionContext(
 		ctx.sessionManager.getBranch(),
 		ctx.sessionManager.getLeafId(),
 	)
-	const messages = context.messages as TokenMessage[]
+	return context.messages as TokenMessage[]
+}
+
+type SessionUsageTotals = {
+	input: number
+	output: number
+	cacheRead: number
+	cacheWrite: number
+}
+
+/** Aggregate usage over assistant messages in the current branch. */
+function getSessionUsageTotals(
+	messages: TokenMessage[],
+): SessionUsageTotals | null {
+	const totals: SessionUsageTotals = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+	}
+	for (const message of messages) {
+		if (message.role !== "assistant" || !message.usage) continue
+		totals.input += message.usage.input
+		totals.output += message.usage.output
+		totals.cacheRead += message.usage.cacheRead
+		totals.cacheWrite += message.usage.cacheWrite
+	}
+	const hasData =
+		totals.input > 0 ||
+		totals.output > 0 ||
+		totals.cacheRead > 0 ||
+		totals.cacheWrite > 0
+	return hasData ? totals : null
+}
+
+function formatUsageTotals(totals: SessionUsageTotals): string {
+	const parts = [
+		`In ${formatCount(totals.input)}`,
+		`Out ${formatCount(totals.output)}`,
+	]
+	const promptTokens = totals.input + totals.cacheRead + totals.cacheWrite
+	if (promptTokens > 0) {
+		const hitRate = (totals.cacheRead / promptTokens) * 100
+		parts.push(`Cache Hit ${hitRate.toFixed(0)}%`)
+	}
+	return parts.join(" / ")
+}
+
+function getContextTokenSegments(
+	ctx: ExtensionContext,
+	messages: TokenMessage[],
+): TokenSegment[] {
 	const systemSegment: TokenSegment = {
 		category: "system",
 		tokens: estimateTokensFromChars(ctx.getSystemPrompt().length),
@@ -327,6 +378,7 @@ function applyCustomFooter(
 			},
 			invalidate() {},
 			render(width: number): string[] {
+				const messages = getBranchMessages(ctx)
 				const sections: string[] = []
 				const agentStatus = footerData
 					.getExtensionStatuses()
@@ -349,7 +401,7 @@ function applyCustomFooter(
 					const { tokens, contextWindow, percent } = contextUsage
 					const usage = tokens !== null ? formatCount(tokens) : "?"
 					const progressBar = renderTokenProgressBar(
-						getContextTokenSegments(ctx),
+						getContextTokenSegments(ctx, messages),
 						contextWindow,
 						tokens,
 						(text) => theme.fg(contextUsageBarStyle(percent), text),
@@ -363,6 +415,11 @@ function applyCustomFooter(
 					sections.push(
 						`${progressBar} ${theme.fg("dim", `${usage}/${formatCount(contextWindow)} ${pct}`)}`,
 					)
+				}
+
+				const usageTotals = getSessionUsageTotals(messages)
+				if (usageTotals) {
+					sections.push(theme.fg("dim", formatUsageTotals(usageTotals)))
 				}
 
 				const lastRunDurationMs = getLastRunDurationMs()

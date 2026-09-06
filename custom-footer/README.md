@@ -10,7 +10,9 @@ By rendering via `ctx.ui.setFooter(...)`, the line is managed as the footer, not
 ## What it shows
 
 - Session title (from `pi.setSessionName()` / `/name` / auto-title extension), shown on the right in the accent color when set
-- Token usage summary (`input`, `output`, `cost`) from assistant messages in current branch
+- Context usage bar with color-coded percentage of the context window
+- Usage summary (`In 12.3K / Out 4.5K / Cache Hit 91%`, K/M formatted): cumulative input/output tokens and cache hit rate (`cacheRead / (input + cacheRead + cacheWrite)`) aggregated over assistant messages in the current branch
+- Last run duration
 - Aggregated extension status texts (`ctx.ui.setStatus(...)` entries)
 - Current model id
 - Current git branch (if available)
