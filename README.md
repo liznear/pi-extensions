@@ -7,6 +7,7 @@ This repo is also a **Pi package**, so you can install it directly via `pi insta
 ## Included extensions
 
 - `ask-question`
+- `announce`
 - `auto-title`
 - `bash-timeout`
 - `custom-agents`
@@ -56,7 +57,7 @@ Create symlinks from this repo into that folder:
 ```bash
 mkdir -p ~/.pi/agent/extensions
 
-for ext in ask-question auto-title bash-timeout custom-agents custom-footer explain mini-task command-run otty-integration command-center; do
+for ext in ask-question announce auto-title bash-timeout custom-agents custom-footer explain mini-task command-run otty-integration command-center; do
   ln -sfn "$PWD/$ext" "$HOME/.pi/agent/extensions/$ext"
 done
 ```
