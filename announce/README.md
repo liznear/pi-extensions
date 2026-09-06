@@ -78,8 +78,7 @@ hosting terminal understands:
 
 | Environment                          | Detection            | Mechanism                                    |
 | ------------------------------------ | -------------------- | -------------------------------------------- |
-| Direct terminal (iTerm2, Ghostty, WezTerm, Kitty, Windows Terminal, ...) | default | `ctx.ui.setTitle()` — OSC 0 |
-| Orca embedded terminal               | `$ORCA_TERMINAL_HANDLE` | additionally `orca terminal rename` (Orca's visible tab title does not follow OSC 0) |
+| Direct terminal (Orca, iTerm2, Ghostty, WezTerm, Kitty, Windows Terminal, ...) | default | `ctx.ui.setTitle()` — OSC 0 |
 | tmux                                 | `$TMUX`              | additionally `tmux rename-window`            |
 | GNU screen                           | `$STY` / `TERM=screen*` | additionally `screen -X title`            |
 
@@ -87,6 +86,12 @@ When the agent settles (or on a new prompt / shutdown), the title is restored
 to `π - <sessionName> - <folder>` — the same format auto-title uses, so the two
 extensions compose. Under tmux, the window's previous `automatic-rename`
 setting is captured at session start and restored afterwards.
+
+> **Orca caveat:** Orca's visible tab title does not follow OSC 0 — the session
+> name only reaches Orca's internal record (`orca terminal show` →
+> `result.terminal.title`). Do not "fix" this with `orca terminal rename`:
+> a manually renamed tab is no longer classified as a pi session and drops
+> out of Orca's sidebar (verified on Orca 1.4.197).
 
 ## Notes
 

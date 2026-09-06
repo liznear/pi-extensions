@@ -23,5 +23,5 @@
 		"noUnusedParameters": false,
 		"noPropertyAccessFromIndexSignature": false
 	},
-	"include": ["command-center", "actor-graph", "lib", "scripts"]
+	"include": ["command-center", "actor-graph", "scripts"]
 }

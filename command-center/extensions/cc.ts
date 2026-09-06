@@ -6,7 +6,6 @@ import type {
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
-import { renameOrcaTabTitle } from "../../lib/orca-terminal-title"
 import {
 	createAutoSessionRunner,
 	isHerdrEnv,
@@ -54,8 +53,6 @@ function refreshTerminalActivityTitle(ctx: ExtensionContext): void {
 	const title = formatTerminalActivityTitle(baseTitle, terminalMissionWorking)
 	if (title === lastTerminalTitle) return
 	ctx.ui.setTitle(title)
-	// Orca's visible tab title does not follow OSC 0; rename via the CLI.
-	renameOrcaTabTitle(title)
 	lastTerminalTitle = title
 }
 

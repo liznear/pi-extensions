@@ -40,7 +40,6 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { renameOrcaTabTitle } from "../lib/orca-terminal-title"
 
 const TOOL_NAME = "announce"
 const ENV_VAR = "PI_ANNOUNCE_MODE"
@@ -336,8 +335,6 @@ export default function (pi: ExtensionAPI) {
 	function setTabTitle(ctx: ExtensionContext, title: string): void {
 		if (!ctx.hasUI || !title) return
 		ctx.ui.setTitle(title)
-		// Orca's visible tab title does not follow OSC 0; rename via the CLI.
-		renameOrcaTabTitle(title)
 		if (termEnv.tmux) {
 			runBestEffort(pi, "tmux", ["rename-window", title])
 		} else if (termEnv.screen) {
@@ -352,7 +349,6 @@ export default function (pi: ExtensionAPI) {
 		const folder = basename(ctx.cwd)
 		const base = name ? `π - ${name} - ${folder}` : `π - ${folder}`
 		ctx.ui.setTitle(base)
-		renameOrcaTabTitle(base)
 		if (termEnv.tmux) {
 			runBestEffort(pi, "tmux", ["rename-window", base])
 			if (tmuxAutomaticRename !== undefined) {

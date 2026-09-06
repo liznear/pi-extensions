@@ -17,9 +17,12 @@ your normal agent workflow is never blocked.
 - Skips sessions that already have a name (e.g. resumed/`--name` sessions).
 - Uses a configurable model (see below). Falls back to the active session model.
 - Mirrors the session name to the **terminal tab title**, so it shows up in the
-  host terminal's tab bar — including Orca's embedded terminal (via
-  `orca terminal rename`), iTerm2, Ghostty, WezTerm, etc. (via the standard
-  OSC title sequence).
+  host terminal's tab bar — including Orca's embedded terminal, iTerm2, Ghostty,
+  WezTerm, etc. (via the standard OSC title sequence; no Orca-specific code).
+  Note: Orca's visible tab title does not follow OSC 0 (the name only reaches
+  Orca's internal record); do not work around it with `orca terminal rename` —
+  a manually renamed tab stops being classified as a pi session in Orca's
+  sidebar (verified on Orca 1.4.197).
 
 ## Configuration
 
