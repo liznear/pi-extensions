@@ -254,13 +254,13 @@ function getSessionUsageTotals(
 
 function formatUsageTotals(totals: SessionUsageTotals): string {
 	const parts = [
-		`In ${formatCount(totals.input)}`,
-		`Out ${formatCount(totals.output)}`,
+		`↑${formatCount(totals.input)}`,
+		`↓${formatCount(totals.output)}`,
 	]
 	const promptTokens = totals.input + totals.cacheRead + totals.cacheWrite
 	if (promptTokens > 0) {
 		const hitRate = (totals.cacheRead / promptTokens) * 100
-		parts.push(`Cache Hit ${hitRate.toFixed(0)}%`)
+		parts.push(`$${hitRate.toFixed(0)}%`)
 	}
 	return parts.join(" / ")
 }
