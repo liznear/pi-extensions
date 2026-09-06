@@ -13,7 +13,8 @@ agent works instead of watching it grind through tool calls in silence.
   prompt arrives (both restore the default message).
 - Tool transcript rows stay compact: the call shows `announce <intention>`,
   the result row is empty — the working message is the real output.
-- The intention is also mirrored to the **terminal tab title** (`π ◈ <intention>`)
+- The intention is also mirrored to the **terminal tab title** (the intention
+  text itself)
   and restored when the agent settles (see below).
 - Two ways to make the LLM actually use it (see below).
 
@@ -73,8 +74,8 @@ Project-local config overrides global config.
 
 ## Tab title mirroring
 
-On every announce, the tab title becomes `π ◈ <intention>` using whatever the
-hosting terminal understands:
+On every announce, the tab title becomes the intention text itself, using
+whatever the hosting terminal understands:
 
 | Environment                          | Detection            | Mechanism                                    |
 | ------------------------------------ | -------------------- | -------------------------------------------- |

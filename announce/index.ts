@@ -457,7 +457,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			showIntention(ctx, params.intention)
 			if (resolveTabTitle(loadConfig(ctx))) {
-				setTabTitle(ctx, `π ◈ ${sanitizeTitle(params.intention)}`)
+				setTabTitle(ctx, sanitizeTitle(params.intention))
 			}
 			return {
 				content: [{ type: "text", text: "ok" }],
