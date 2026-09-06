@@ -19,13 +19,14 @@ agent works instead of watching it grind through tool calls in silence.
 
 ## Making the LLM call it
 
-Pi offers two levels, selected via `mode`:
+Pi offers three levels, selected via `mode`:
 
-| Mode        | Mechanism                                                                                                                             |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `encourage` | Tool `promptSnippet` + `promptGuidelines` are injected into the system prompt ("call announce before each batch of work"). Soft only. |
-| `enforce`   | Additionally intercepts every other tool call: if the LLM hasn't called `announce` since your last prompt, or has run more than `maxToolCalls` calls since its last announce, the call is **blocked** and the reason is returned to the model, forcing it to announce first. |
-| `off`       | Tool deactivated entirely.                                                                                                            |
+| Mode         | Mechanism                                                                                                                                                                                                                                                                                   |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `encourage`  | Tool `promptSnippet` + `promptGuidelines` are injected into the system prompt ("call announce before each batch of work"). Soft only.                                                                                                                                                       |
+| `nag`        | Encourage plus a Claude Code-style nag: once more than `nagAfterToolCalls` tool calls have run since the last announce, a short reminder is appended (ephemerally, per request — never persisted to the transcript) to the next LLM request until the model announces. Nothing is blocked.  |
+| `enforce`    | Additionally intercepts every other tool call: if the LLM hasn't called `announce` since your last prompt, or has run more than `maxToolCalls` calls since its last announce, the call is **blocked** and the reason is returned to the model, forcing it to announce first.                |
+| `off`        | Tool deactivated entirely.                                                                                                                                                                                                                                                                  |
 
 Default is `enforce` with `maxToolCalls: 3`.
 
@@ -33,7 +34,7 @@ Default is `enforce` with `maxToolCalls: 3`.
 
 Resolved in this order (first match wins):
 
-1. **Env var:** `PI_ANNOUNCE_MODE` — `enforce` / `encourage` / `off`
+1. **Env var:** `PI_ANNOUNCE_MODE` — `enforce` / `nag` / `encourage` / `off`
 2. **Project-local config:** `<cwd>/.pi/announce.json`
 3. **Global config:** `~/.pi/agent/announce.json`
 4. Default: `enforce`
@@ -42,7 +43,8 @@ Config file shape:
 
 ```json
 {
- "mode": "enforce",
+ "mode": "nag",
+ "nagAfterToolCalls": 3,
  "maxToolCalls": 3
 }
 ```
@@ -50,6 +52,9 @@ Config file shape:
 - `mode` — see table above.
 - `maxToolCalls` — in enforce mode, how many tool calls are allowed after each
   announce before the next one is gated (default `3`, clamped to 1–50).
+- `nagAfterToolCalls` — in nag mode, how many tool calls may run after an
+  announce before the reminder starts being injected into LLM requests
+  (default `3`, clamped to 1–50).
 - `tabTitle` — set to `false` to stop mirroring the intention to the terminal
   tab title (default `true`).
 
@@ -57,13 +62,14 @@ Project-local config overrides global config.
 
 ## Commands
 
-| Command                      | Description                                    |
-| ---------------------------- | ---------------------------------------------- |
-| `/announce`                  | Show the current configuration.                |
-| `/announce enforce`          | Persist mode `enforce` to the global config.   |
-| `/announce encourage`        | Persist mode `encourage` to the global config. |
-| `/announce off`              | Deactivate the tool.                           |
-| `/announce clear`            | Restore the default working message.            |
+| Command                       | Description                                     |
+| ----------------------------- | ----------------------------------------------- |
+| `/announce`                   | Show the current configuration.                 |
+| `/announce enforce`           | Persist mode `enforce` to the global config.    |
+| `/announce nag`               | Persist mode `nag` to the global config.        |
+| `/announce encourage`         | Persist mode `encourage` to the global config.  |
+| `/announce off`               | Deactivate the tool.                            |
+| `/announce clear`             | Restore the default working message.            |
 
 ## Tab title mirroring
 

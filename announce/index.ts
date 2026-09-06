@@ -8,9 +8,13 @@
  * Ghostty, WezTerm, ...; `tmux rename-window` under tmux; `screen -X title`
  * under GNU screen) and restored once the agent settles.
  *
- * Two levels of persuasion (plus off):
+ * Three levels of persuasion (plus off):
  *   - "encourage": `promptSnippet`/`promptGuidelines` instruct the model to
  *     call announce before each batch of work. Zero overhead, no blocking.
+ *   - "nag": encourage plus an ephemeral reminder appended to the next LLM
+ *     request once `nagAfterToolCalls` tool calls have run since the last
+ *     announce (Claude Code-style nag injection; nothing is blocked and the
+ *     reminder never lands in the persisted transcript).
  *   - "enforce": additionally gates every other tool call. If the model has
  *     not called announce since the user's last prompt, or has run more than
  *     `maxToolCalls` tool calls since its last announce, the next tool call is
@@ -20,11 +24,11 @@
  * Configuration (project-local `<cwd>/.pi/announce.json` overrides global
  * `~/.pi/agent/announce.json`; the `PI_ANNOUNCE_MODE` env var overrides both):
  *
- *   { "mode": "enforce", "maxToolCalls": 3, "tabTitle": true }
+ *   { "mode": "nag", "nagAfterToolCalls": 3, "maxToolCalls": 3, "tabTitle": true }
  *
  * Commands:
- *   /announce [enforce|encourage|off]  Show current config or persist a mode.
- *   /announce clear                    Restore the default working message.
+ *   /announce [enforce|nag|encourage|off]  Show current config or persist a mode.
+ *   /announce clear                        Restore the default working message.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -49,15 +53,19 @@ const DEFAULT_MODE: Mode = "enforce"
 const DEFAULT_MAX_TOOL_CALLS = 3
 const MIN_MAX_TOOL_CALLS = 1
 const MAX_MAX_TOOL_CALLS = 50
+const DEFAULT_NAG_AFTER_TOOL_CALLS = 3
+const MIN_NAG_AFTER_TOOL_CALLS = 1
+const MAX_NAG_AFTER_TOOL_CALLS = 50
 const MAX_INTENTION_CHARS = 110
 const MAX_TRANSCRIPT_CHARS = 80
 const MAX_TAB_TITLE_CHARS = 60
 
-type Mode = "off" | "encourage" | "enforce"
+type Mode = "off" | "encourage" | "nag" | "enforce"
 
 type Config = {
 	mode?: Mode
 	maxToolCalls?: number
+	nagAfterToolCalls?: number
 	tabTitle?: boolean
 }
 
@@ -100,7 +108,12 @@ function writeGlobalConfig(cfg: Config): void {
 
 function resolveMode(config: Config): Mode {
 	const fromEnv = process.env[ENV_VAR]?.trim().toLowerCase()
-	if (fromEnv === "off" || fromEnv === "encourage" || fromEnv === "enforce") {
+	if (
+		fromEnv === "off" ||
+		fromEnv === "encourage" ||
+		fromEnv === "nag" ||
+		fromEnv === "enforce"
+	) {
 		return fromEnv
 	}
 	return config.mode ?? DEFAULT_MODE
@@ -117,8 +130,110 @@ function resolveMaxToolCalls(config: Config): number {
 	)
 }
 
+function resolveNagAfterToolCalls(config: Config): number {
+	const raw = config.nagAfterToolCalls
+	if (typeof raw !== "number" || !Number.isFinite(raw)) {
+		return DEFAULT_NAG_AFTER_TOOL_CALLS
+	}
+	return Math.min(
+		MAX_NAG_AFTER_TOOL_CALLS,
+		Math.max(MIN_NAG_AFTER_TOOL_CALLS, Math.trunc(raw)),
+	)
+}
+
 function resolveTabTitle(config: Config): boolean {
 	return config.tabTitle !== false
+}
+
+// ---------------------------------------------------------------------------
+// Announce tracker (enforce gate + nag bookkeeping)
+// ---------------------------------------------------------------------------
+
+export type AnnounceTracker = {
+	/** New user prompt (or session start): announce is required again. */
+	reset: () => void
+	/** The model called announce. */
+	announced: () => void
+	/**
+	 * Record a non-announce tool call. In enforce mode, returns a block
+	 * reason when the model must announce first; otherwise counts the call.
+	 */
+	gateToolCall: (config: Config) => string | undefined
+	/** Non-announce tool calls executed since the last announce. */
+	readonly toolCallsSinceAnnounce: number
+}
+
+export function createTracker(): AnnounceTracker {
+	// True at the start of a user turn: enforce mode requires an announce
+	// before the first tool call of the turn.
+	let announceRequired = true
+	let toolCallsSinceAnnounce = 0
+	return {
+		reset() {
+			announceRequired = true
+			toolCallsSinceAnnounce = 0
+		},
+		announced() {
+			announceRequired = false
+			toolCallsSinceAnnounce = 0
+		},
+		gateToolCall(config) {
+			if (resolveMode(config) === "enforce") {
+				if (
+					announceRequired ||
+					toolCallsSinceAnnounce >= resolveMaxToolCalls(config)
+				) {
+					return `Gated by ${TOOL_NAME}: call the ${TOOL_NAME} tool first with a one-line summary of what you are about to do, then retry this tool call.`
+				}
+			}
+			toolCallsSinceAnnounce++
+			return undefined
+		},
+		get toolCallsSinceAnnounce() {
+			return toolCallsSinceAnnounce
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Nag reminder injection
+// ---------------------------------------------------------------------------
+
+type TextPart = { type: "text"; text: string }
+
+/** Structural slice of a chat message: role plus optional content parts. */
+export type ChatMessageLike = { role: string; content?: unknown }
+
+/**
+ * Append an ephemeral announce reminder to the last message, in place.
+ * Returns the reminder text, or undefined when it cannot be attached (no
+ * messages, or the last message is neither user nor toolResult). Callers
+ * operate on the per-request deep copy from the `context` event, so the
+ * reminder never lands in the persisted transcript.
+ */
+export function appendReminder(
+	messages: ChatMessageLike[],
+	toolCallsSinceAnnounce: number,
+): string | undefined {
+	const last = messages[messages.length - 1]
+	if (!last) return undefined
+
+	const reminder: TextPart = {
+		type: "text",
+		text: `[reminder] ${toolCallsSinceAnnounce} tool calls have run since your last announce. Call the announce tool now with a one-line status of what you are doing, then continue.`,
+	}
+
+	if (last.role === "user") {
+		last.content =
+			typeof last.content === "string"
+				? [{ type: "text", text: last.content }, reminder]
+				: [...(last.content as TextPart[]), reminder]
+	} else if (last.role === "toolResult") {
+		last.content = [...(last.content as TextPart[]), reminder]
+	} else {
+		return undefined
+	}
+	return reminder.text
 }
 
 // ---------------------------------------------------------------------------
@@ -195,10 +310,9 @@ function runBestEffort(
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-	// Number of non-announce tool calls executed since the last announce.
-	// +Infinity means "announce required before the next tool call" (start of
-	// a user turn).
-	let toolCallsSinceAnnounce = Number.POSITIVE_INFINITY
+	// Gating + nag bookkeeping shared by the tool_call gate and the context
+	// nag injection.
+	const tracker = createTracker()
 
 	// --- Tab title ----------------------------------------------------------
 	const termEnv = detectTerminalEnv()
@@ -261,7 +375,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		toolCallsSinceAnnounce = Number.POSITIVE_INFINITY
+		tracker.reset()
 		showIntention(ctx, undefined)
 		syncToolActive(ctx)
 		captureTmuxAutomaticRename()
@@ -271,7 +385,7 @@ export default function (pi: ExtensionAPI) {
 	// New user prompt: drop the stale intention and require a fresh announce
 	// before the first tool call of the turn (enforce mode).
 	pi.on("before_agent_start", (_event, ctx) => {
-		toolCallsSinceAnnounce = Number.POSITIVE_INFINITY
+		tracker.reset()
 		showIntention(ctx, undefined)
 		restoreTabTitle(ctx)
 	})
@@ -292,22 +406,33 @@ export default function (pi: ExtensionAPI) {
 	// precedes them.
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName === TOOL_NAME) {
-			toolCallsSinceAnnounce = 0
+			tracker.announced()
 			return
 		}
 
+		const reason = tracker.gateToolCall(loadConfig(ctx))
+		if (reason !== undefined) {
+			return { block: true, reason }
+		}
+	})
+
+	// Claude Code-style nag: while in announce debt, append an ephemeral
+	// reminder to the last message of the next LLM request. The `context`
+	// event works on a per-request deep copy, so the reminder never lands in
+	// the persisted transcript and is not sent again once announce is called.
+	pi.on("context", async (event, ctx) => {
 		const config = loadConfig(ctx)
-		if (resolveMode(config) !== "enforce") return
-
-		if (toolCallsSinceAnnounce < resolveMaxToolCalls(config)) {
-			toolCallsSinceAnnounce++
+		if (resolveMode(config) !== "nag") return
+		if (tracker.toolCallsSinceAnnounce < resolveNagAfterToolCalls(config)) {
 			return
 		}
-
-		return {
-			block: true,
-			reason: `Gated by ${TOOL_NAME}: call the ${TOOL_NAME} tool first with a one-line summary of what you are about to do, then retry this tool call.`,
+		if (
+			appendReminder(event.messages, tracker.toolCallsSinceAnnounce) ===
+			undefined
+		) {
+			return
 		}
+		return { messages: event.messages }
 	})
 
 	pi.registerTool({
@@ -369,7 +494,12 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
-			if (action === "off" || action === "encourage" || action === "enforce") {
+			if (
+				action === "off" ||
+				action === "encourage" ||
+				action === "nag" ||
+				action === "enforce"
+			) {
 				const globalCfg = readJsonIfExists(GLOBAL_CONFIG_PATH)
 				globalCfg.mode = action
 				try {
@@ -391,9 +521,10 @@ export default function (pi: ExtensionAPI) {
 				[
 					`mode:        ${mode}${envOverride ? ` (env: ${envOverride})` : ""}`,
 					`maxToolCalls: ${resolveMaxToolCalls(config)} (enforce mode)`,
+					`nagAfterToolCalls: ${resolveNagAfterToolCalls(config)} (nag mode)`,
 					`tabTitle:    ${resolveTabTitle(config) ? "on" : "off"}`,
 					`global cfg:  ${GLOBAL_CONFIG_PATH}`,
-					"usage:       /announce [enforce|encourage|off|clear]",
+					"usage:       /announce [enforce|nag|encourage|off|clear]",
 				].join("\n"),
 				"info",
 			)
