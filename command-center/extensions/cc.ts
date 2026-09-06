@@ -6,6 +6,7 @@ import type {
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
+import { renameOrcaTabTitle } from "../../lib/orca-terminal-title"
 import {
 	createAutoSessionRunner,
 	isHerdrEnv,
@@ -53,6 +54,8 @@ function refreshTerminalActivityTitle(ctx: ExtensionContext): void {
 	const title = formatTerminalActivityTitle(baseTitle, terminalMissionWorking)
 	if (title === lastTerminalTitle) return
 	ctx.ui.setTitle(title)
+	// Orca's visible tab title does not follow OSC 0; rename via the CLI.
+	renameOrcaTabTitle(title)
 	lastTerminalTitle = title
 }
 
@@ -624,6 +627,9 @@ export default function (pi: ExtensionAPI) {
 	// `session_info_changed` is available in the runtime even when older SDK
 	// typings do not include it. Track the base title so the mission marker does
 	// not erase titles set by /name or the auto-title extension.
+	// SAFETY: the runtime emits `session_info_changed` events whose payload
+	// matches SessionInfoChangedEvent; the cast only widens `pi.on` for an
+	// event the installed SDK typings do not model.
 	const onSessionInfoChanged = pi.on as unknown as (
 		event: "session_info_changed",
 		handler: (event: SessionInfoChangedEvent, ctx: ExtensionContext) => void,
