@@ -1,17 +1,20 @@
 # announce
 
 A pi extension that gives the LLM an `announce` tool to broadcast what it is
-currently doing. The latest intention is rendered as a widget **above the input
-box**, so you can follow along while the agent works instead of watching it
-grind through tool calls in silence.
+currently doing. The latest intention **replaces the built-in `"Working..."`
+streaming message** (the spinner is kept), so you can follow along while the
+agent works instead of watching it grind through tool calls in silence.
 
 ## What it does
 
 - Registers an `announce` tool. The LLM calls it with a one-line summary of
-  what it is about to do; the text shows up above the editor until the agent
-  settles (or the next user prompt clears it).
+  what it is about to do; the text replaces the `"Working..."` message next to
+  the spinner while the agent streams, until it settles or the next user
+  prompt arrives (both restore the default message).
 - Tool transcript rows stay compact: the call shows `announce <intention>`,
-  the result row is empty — the widget is the real output.
+  the result row is empty — the working message is the real output.
+- The intention is also mirrored to the **terminal tab title** (`π ◈ <intention>`)
+  and restored when the agent settles (see below).
 - Two ways to make the LLM actually use it (see below).
 
 ## Making the LLM call it
@@ -47,6 +50,8 @@ Config file shape:
 - `mode` — see table above.
 - `maxToolCalls` — in enforce mode, how many tool calls are allowed after each
   announce before the next one is gated (default `3`, clamped to 1–50).
+- `tabTitle` — set to `false` to stop mirroring the intention to the terminal
+  tab title (default `true`).
 
 Project-local config overrides global config.
 
@@ -58,12 +63,29 @@ Project-local config overrides global config.
 | `/announce enforce`          | Persist mode `enforce` to the global config.   |
 | `/announce encourage`        | Persist mode `encourage` to the global config. |
 | `/announce off`              | Deactivate the tool.                           |
-| `/announce clear`            | Clear the intention widget.                    |
+| `/announce clear`            | Restore the default working message.            |
+
+## Tab title mirroring
+
+On every announce, the tab title becomes `π ◈ <intention>` using whatever the
+hosting terminal understands:
+
+| Environment                          | Detection            | Mechanism                                    |
+| ------------------------------------ | -------------------- | -------------------------------------------- |
+| Direct terminal (Orca, iTerm2, Ghostty, WezTerm, Kitty, Windows Terminal, ...) | default | `ctx.ui.setTitle()` — OSC 0 |
+| tmux                                 | `$TMUX`              | additionally `tmux rename-window`            |
+| GNU screen                           | `$STY` / `TERM=screen*` | additionally `screen -X title`            |
+
+When the agent settles (or on a new prompt / shutdown), the title is restored
+to `π - <sessionName> - <folder>` — the same format auto-title uses, so the two
+extensions compose. Under tmux, the window's previous `automatic-rename`
+setting is captured at session start and restored afterwards.
 
 ## Notes
 
-- `agent_settled` clears the widget once the agent is fully done (including
-  retries and follow-ups); a new user prompt also clears it immediately.
+- The working row only appears while pi is streaming; `agent_settled` and the
+  next user prompt both restore the default `"Working..."` message so a stale
+  intention never leaks into a later turn.
 - Related idea: instead of relying on the main LLM to cooperate, an
   auto-title-style background summarizer could infer the intention from the
   message stream. Not implemented — the direct tool is cheaper and precise.

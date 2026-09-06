@@ -2,8 +2,11 @@
  * Announce Extension
  *
  * Gives the LLM an `announce` tool to broadcast what it is currently doing.
- * The latest intention is rendered as a widget above the input editor, so the
- * user can follow along while the agent works.
+ * The latest intention replaces the built-in "Working..." streaming message
+ * (the spinner is kept), so the user can follow along while the agent works. The intention is also mirrored
+ * to the terminal tab title (OSC 0 for Orca's embedded terminal, iTerm2,
+ * Ghostty, WezTerm, ...; `tmux rename-window` under tmux; `screen -X title`
+ * under GNU screen) and restored once the agent settles.
  *
  * Two levels of persuasion (plus off):
  *   - "encourage": `promptSnippet`/`promptGuidelines` instruct the model to
@@ -17,16 +20,16 @@
  * Configuration (project-local `<cwd>/.pi/announce.json` overrides global
  * `~/.pi/agent/announce.json`; the `PI_ANNOUNCE_MODE` env var overrides both):
  *
- *   { "mode": "enforce", "maxToolCalls": 3 }
+ *   { "mode": "enforce", "maxToolCalls": 3, "tabTitle": true }
  *
  * Commands:
  *   /announce [enforce|encourage|off]  Show current config or persist a mode.
- *   /announce clear                    Clear the widget.
+ *   /announce clear                    Restore the default working message.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -35,7 +38,6 @@ import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 
 const TOOL_NAME = "announce"
-const WIDGET_NAME = "announce-intention"
 const ENV_VAR = "PI_ANNOUNCE_MODE"
 // Default pi config dir. Newer pi versions export CONFIG_DIR_NAME; hardcode
 // here for cross-version compatibility (same as auto-title).
@@ -49,12 +51,14 @@ const MIN_MAX_TOOL_CALLS = 1
 const MAX_MAX_TOOL_CALLS = 50
 const MAX_INTENTION_CHARS = 110
 const MAX_TRANSCRIPT_CHARS = 80
+const MAX_TAB_TITLE_CHARS = 60
 
 type Mode = "off" | "encourage" | "enforce"
 
 type Config = {
 	mode?: Mode
 	maxToolCalls?: number
+	tabTitle?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -113,8 +117,12 @@ function resolveMaxToolCalls(config: Config): number {
 	)
 }
 
+function resolveTabTitle(config: Config): boolean {
+	return config.tabTitle !== false
+}
+
 // ---------------------------------------------------------------------------
-// Widget
+// Working message
 // ---------------------------------------------------------------------------
 
 function clip(text: string, max: number): string {
@@ -126,14 +134,60 @@ function showIntention(
 	intention: string | undefined,
 ): void {
 	if (!ctx.hasUI) return
+	// An empty intention restores the default "Working..." message.
 	if (!intention?.trim()) {
-		ctx.ui.setWidget(WIDGET_NAME, undefined)
+		ctx.ui.setWorkingMessage()
 		return
 	}
-	const theme = ctx.ui.theme
-	const mark = theme.fg("accent", "◈")
-	const text = theme.fg("muted", clip(intention.trim(), MAX_INTENTION_CHARS))
-	ctx.ui.setWidget(WIDGET_NAME, [`${mark} ${text}`])
+	ctx.ui.setWorkingMessage(clip(intention.trim(), MAX_INTENTION_CHARS))
+}
+
+// ---------------------------------------------------------------------------
+// Tab title (multi-environment)
+// ---------------------------------------------------------------------------
+
+/** Terminal hosting this pi process, resolved once at load time. */
+type TerminalEnv = {
+	/** Inside tmux ($TMUX set): OSC titles are usually swallowed by tmux. */
+	tmux: boolean
+	/** Inside GNU screen ($STY set, or TERM=screen* outside tmux). */
+	screen: boolean
+}
+
+function detectTerminalEnv(): TerminalEnv {
+	const tmux = Boolean(process.env.TMUX)
+	return {
+		tmux,
+		screen:
+			!tmux &&
+			(Boolean(process.env.STY) ||
+				(process.env.TERM ?? "").startsWith("screen")),
+	}
+}
+
+/**
+ * Strip characters that would break OSC sequences or tmux/screen arguments,
+ * collapse whitespace, and clip to a tab-friendly length.
+ */
+function sanitizeTitle(text: string): string {
+	// Strip control characters without spelling them out in a regex pattern
+	// (biome flags control-char escapes inside regex character classes).
+	const printable = [...text]
+		.filter((ch) => {
+			const code = ch.codePointAt(0) ?? 0
+			return code >= 0x20 && code !== 0x7f
+		})
+		.join("")
+	return clip(printable.replace(/\s+/g, " ").trim(), MAX_TAB_TITLE_CHARS)
+}
+
+/** Fire-and-forget external command; tab titles are best-effort. */
+function runBestEffort(
+	pi: ExtensionAPI,
+	command: string,
+	args: string[],
+): void {
+	pi.exec(command, args, { timeout: 2000 }).catch(() => {})
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +199,55 @@ export default function (pi: ExtensionAPI) {
 	// +Infinity means "announce required before the next tool call" (start of
 	// a user turn).
 	let toolCallsSinceAnnounce = Number.POSITIVE_INFINITY
+
+	// --- Tab title ----------------------------------------------------------
+	const termEnv = detectTerminalEnv()
+	// Captured `automatic-rename` value so tmux windows return to their
+	// previous naming behavior when we restore.
+	let tmuxAutomaticRename: string | undefined
+
+	function captureTmuxAutomaticRename(): void {
+		if (!termEnv.tmux) return
+		pi.exec("tmux", ["show-option", "-wv", "automatic-rename"], {
+			timeout: 2000,
+		})
+			.then((result) => {
+				const value = result.stdout.trim()
+				if (result.code === 0 && value) tmuxAutomaticRename = value
+			})
+			.catch(() => {})
+	}
+
+	function setTabTitle(ctx: ExtensionContext, title: string): void {
+		if (!ctx.hasUI || !title) return
+		ctx.ui.setTitle(title)
+		if (termEnv.tmux) {
+			runBestEffort(pi, "tmux", ["rename-window", title])
+		} else if (termEnv.screen) {
+			runBestEffort(pi, "screen", ["-X", "title", title])
+		}
+	}
+
+	/** Restore uses the same format as auto-title, so both compose. */
+	function restoreTabTitle(ctx: ExtensionContext): void {
+		if (!ctx.hasUI || !resolveTabTitle(loadConfig(ctx))) return
+		const name = pi.getSessionName()
+		const folder = basename(ctx.cwd)
+		const base = name ? `π - ${name} - ${folder}` : `π - ${folder}`
+		ctx.ui.setTitle(base)
+		if (termEnv.tmux) {
+			runBestEffort(pi, "tmux", ["rename-window", base])
+			if (tmuxAutomaticRename !== undefined) {
+				runBestEffort(pi, "tmux", [
+					"set-option",
+					"-w",
+					`automatic-rename=${tmuxAutomaticRename}`,
+				])
+			}
+		} else if (termEnv.screen) {
+			runBestEffort(pi, "screen", ["-X", "title", base])
+		}
+	}
 
 	function syncToolActive(ctx: ExtensionContext): void {
 		const mode = resolveMode(loadConfig(ctx))
@@ -161,6 +264,8 @@ export default function (pi: ExtensionAPI) {
 		toolCallsSinceAnnounce = Number.POSITIVE_INFINITY
 		showIntention(ctx, undefined)
 		syncToolActive(ctx)
+		captureTmuxAutomaticRename()
+		restoreTabTitle(ctx)
 	})
 
 	// New user prompt: drop the stale intention and require a fresh announce
@@ -168,11 +273,18 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (_event, ctx) => {
 		toolCallsSinceAnnounce = Number.POSITIVE_INFINITY
 		showIntention(ctx, undefined)
+		restoreTabTitle(ctx)
 	})
 
-	// Work fully settled: the intention is stale, clear the widget.
+	// Work fully settled: the intention is stale, restore the default
+	// working message and put the tab title back to its resting form.
 	pi.on("agent_settled", (_event, ctx) => {
 		showIntention(ctx, undefined)
+		restoreTabTitle(ctx)
+	})
+
+	pi.on("session_shutdown", (_event, ctx) => {
+		restoreTabTitle(ctx)
 	})
 
 	// Reset on the tool_call event (preflight runs in assistant source order)
@@ -203,7 +315,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Announce",
 		description:
 			"Tell the user what you are about to do or are currently doing. " +
-			"The message is displayed above the input box while you work. " +
+			"The message replaces the 'Working...' status line while you work. " +
 			"Use one plain line of at most ~12 words, naming files, commands, or the next step.",
 		promptSnippet:
 			"Broadcast a one-line status of what you are working on to the user",
@@ -219,6 +331,9 @@ export default function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			showIntention(ctx, params.intention)
+			if (resolveTabTitle(loadConfig(ctx))) {
+				setTabTitle(ctx, `π ◈ ${sanitizeTitle(params.intention)}`)
+			}
 			return {
 				content: [{ type: "text", text: "ok" }],
 				details: { intention: params.intention },
@@ -236,7 +351,7 @@ export default function (pi: ExtensionAPI) {
 			return text
 		},
 		renderResult() {
-			// The widget above the editor is the real output; keep the
+			// The streaming working message is the real output; keep the
 			// transcript row minimal.
 			return new Text("", 0, 0)
 		},
@@ -250,7 +365,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (action === "clear") {
 				showIntention(ctx, undefined)
-				ctx.ui.notify("Intention widget cleared", "info")
+				ctx.ui.notify("Working message restored to default", "info")
 				return
 			}
 
@@ -276,6 +391,7 @@ export default function (pi: ExtensionAPI) {
 				[
 					`mode:        ${mode}${envOverride ? ` (env: ${envOverride})` : ""}`,
 					`maxToolCalls: ${resolveMaxToolCalls(config)} (enforce mode)`,
+					`tabTitle:    ${resolveTabTitle(config) ? "on" : "off"}`,
 					`global cfg:  ${GLOBAL_CONFIG_PATH}`,
 					"usage:       /announce [enforce|encourage|off|clear]",
 				].join("\n"),
