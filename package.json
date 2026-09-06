@@ -22,8 +22,7 @@
 			"command-run/index.ts",
 			"otty-integration/index.ts",
 			"command-center/index.ts",
-			"command-center/extensions/cc-highlight.ts",
-			"actor-graph/index.ts"
+			"command-center/extensions/cc-highlight.ts"
 		]
 	},
 	"scripts": {
