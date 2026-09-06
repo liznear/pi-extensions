@@ -464,8 +464,13 @@ export default function customFooterExtension(pi: ExtensionAPI): void {
 		}
 	})
 
+	const getCurrentRunDurationMs = (): number | undefined =>
+		currentRunStartedAtMs !== undefined
+			? Date.now() - currentRunStartedAtMs
+			: lastRunDurationMs
+
 	pi.on("session_start", async (_event, ctx) => {
-		if (enabled) applyCustomFooter(ctx, () => lastRunDurationMs)
+		if (enabled) applyCustomFooter(ctx, getCurrentRunDurationMs)
 	})
 
 	pi.registerCommand("custom-footer", {
@@ -486,7 +491,7 @@ export default function customFooterExtension(pi: ExtensionAPI): void {
 
 			if (action === "on" || action === "enable" || action === "") {
 				enabled = true
-				applyCustomFooter(ctx, () => lastRunDurationMs)
+				applyCustomFooter(ctx, getCurrentRunDurationMs)
 				ctx.ui.notify("Custom footer enabled", "info")
 				return
 			}
