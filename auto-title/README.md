@@ -19,10 +19,10 @@ your normal agent workflow is never blocked.
 - Mirrors the session name to the **terminal tab title**, so it shows up in the
   host terminal's tab bar — including Orca's embedded terminal, iTerm2, Ghostty,
   WezTerm, etc. (via the standard OSC title sequence; no Orca-specific code).
-  Note: Orca's visible tab title does not follow OSC 0 (the name only reaches
-  Orca's internal record); do not work around it with `orca terminal rename` —
-  a manually renamed tab stops being classified as a pi session in Orca's
-  sidebar (verified on Orca 1.4.197).
+  Orca's auto tab title follows this OSC title; a manual title (UI rename or
+  `orca terminal rename --title`) pins the label over it — session
+  classification is unaffected, but live updates stop showing. Reset a pinned
+  tab with `orca terminal rename --terminal <handle>` (omit `--title`).
 
 ## Configuration
 

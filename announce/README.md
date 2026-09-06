@@ -87,11 +87,13 @@ to `π - <sessionName> - <folder>` — the same format auto-title uses, so the t
 extensions compose. Under tmux, the window's previous `automatic-rename`
 setting is captured at session start and restored afterwards.
 
-> **Orca caveat:** Orca's visible tab title does not follow OSC 0 — the session
-> name only reaches Orca's internal record (`orca terminal show` →
-> `result.terminal.title`). Do not "fix" this with `orca terminal rename`:
-> a manually renamed tab is no longer classified as a pi session and drops
-> out of Orca's sidebar (verified on Orca 1.4.197).
+> **Orca note:** Orca's auto tab title follows the live PTY title (OSC 0), so
+> the `π - …` titles above show up in the tab as-is. A manual title (UI rename
+> or `orca terminal rename --title`) takes precedence and pins the label —
+> "manual renames still win" per the Orca docs — which stops live OSC updates
+> from showing. It does not affect agent-session classification. If the tab
+> title ever looks stale, reset it with `orca terminal rename --terminal
+> <handle>` (omit `--title`).
 
 ## Notes
 
