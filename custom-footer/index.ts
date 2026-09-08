@@ -393,7 +393,8 @@ function applyCustomFooter(
 					const providerDisplay = ctx.modelRegistry.getProviderDisplayName(
 						ctx.model.provider,
 					)
-					sections.push(theme.fg("dim", `${providerDisplay}/${ctx.model.name}`))
+					const modelDisplay = `${providerDisplay}/${ctx.model.name} · ${ctx.thinkingLevel}`
+					sections.push(theme.fg("dim", modelDisplay))
 				}
 
 				const contextUsage = ctx.getContextUsage()
