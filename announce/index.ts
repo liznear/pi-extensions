@@ -439,7 +439,7 @@ export default function (pi: ExtensionAPI) {
 		name: TOOL_NAME,
 		label: "Announce",
 		description:
-			"Tell the user what you are about to do or are currently doing. " +
+			"Inform the user what you are about to do or are currently doing. Call it before starting a new step" +
 			"The message replaces the 'Working...' status line while you work. " +
 			"Use one plain line of at most ~12 words, naming files, commands, or the next step.",
 		promptSnippet:
