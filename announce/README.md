@@ -61,17 +61,6 @@ Config file shape:
 
 Project-local config overrides global config.
 
-## Commands
-
-| Command                       | Description                                     |
-| ----------------------------- | ----------------------------------------------- |
-| `/announce`                   | Show the current configuration.                 |
-| `/announce enforce`           | Persist mode `enforce` to the global config.    |
-| `/announce nag`               | Persist mode `nag` to the global config.        |
-| `/announce encourage`         | Persist mode `encourage` to the global config.  |
-| `/announce off`               | Deactivate the tool.                            |
-| `/announce clear`             | Restore the default working message.            |
-
 ## Tab title mirroring
 
 On every announce, the tab title becomes the intention text itself, using

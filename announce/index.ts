@@ -25,13 +25,9 @@
  * `~/.pi/agent/announce.json`; the `PI_ANNOUNCE_MODE` env var overrides both):
  *
  *   { "mode": "nag", "nagAfterToolCalls": 3, "maxToolCalls": 3, "tabTitle": true }
- *
- * Commands:
- *   /announce [enforce|nag|encourage|off]  Show current config or persist a mode.
- *   /announce clear                        Restore the default working message.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import type {
@@ -89,21 +85,6 @@ function loadConfig(ctx: ExtensionContext): Config {
 	)
 	// Project-local overrides global.
 	return { ...globalCfg, ...projectCfg }
-}
-
-function writeGlobalConfig(cfg: Config): void {
-	try {
-		mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true })
-		writeFileSync(
-			GLOBAL_CONFIG_PATH,
-			`${JSON.stringify(cfg, null, 2)}\n`,
-			"utf-8",
-		)
-	} catch (err) {
-		throw new Error(
-			`Failed to write ${GLOBAL_CONFIG_PATH}: ${(err as Error).message}`,
-		)
-	}
 }
 
 function resolveMode(config: Config): Mode {
@@ -479,55 +460,6 @@ export default function (pi: ExtensionAPI) {
 			// The streaming working message is the real output; keep the
 			// transcript row minimal.
 			return new Text("", 0, 0)
-		},
-	})
-
-	// /announce [enforce|encourage|off|clear]
-	pi.registerCommand("announce", {
-		description: "Show or configure the announce extension",
-		handler: async (args, ctx) => {
-			const action = (args ?? "").trim().toLowerCase()
-
-			if (action === "clear") {
-				showIntention(ctx, undefined)
-				ctx.ui.notify("Working message restored to default", "info")
-				return
-			}
-
-			if (
-				action === "off" ||
-				action === "encourage" ||
-				action === "nag" ||
-				action === "enforce"
-			) {
-				const globalCfg = readJsonIfExists(GLOBAL_CONFIG_PATH)
-				globalCfg.mode = action
-				try {
-					writeGlobalConfig(globalCfg)
-				} catch (err) {
-					ctx.ui.notify((err as Error).message, "error")
-					return
-				}
-				syncToolActive(ctx)
-				if (action === "off") showIntention(ctx, undefined)
-				ctx.ui.notify(`announce mode set to: ${action}`, "info")
-				return
-			}
-
-			const config = loadConfig(ctx)
-			const mode = resolveMode(config)
-			const envOverride = process.env[ENV_VAR]
-			ctx.ui.notify(
-				[
-					`mode:        ${mode}${envOverride ? ` (env: ${envOverride})` : ""}`,
-					`maxToolCalls: ${resolveMaxToolCalls(config)} (enforce mode)`,
-					`nagAfterToolCalls: ${resolveNagAfterToolCalls(config)} (nag mode)`,
-					`tabTitle:    ${resolveTabTitle(config) ? "on" : "off"}`,
-					`global cfg:  ${GLOBAL_CONFIG_PATH}`,
-					"usage:       /announce [enforce|nag|encourage|off|clear]",
-				].join("\n"),
-				"info",
-			)
 		},
 	})
 }
